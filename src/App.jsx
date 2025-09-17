@@ -255,7 +255,12 @@ function ListingCard({ listing, onDelete }) {
           <Badge color={isSell ? "bg-emerald-100 text-emerald-800" : "bg-sky-100 text-sky-800"}>{isSell ? "SPRZEDAM" : "KUPIĘ"}</Badge>
           <h3 className="font-semibold text-lg">{listing.raceName}</h3>
         </div>
-        <div className="text-right font-semibold">{toPLN(listing.price)}</div>
+        <div className="text-right">
+          {!isSell && (
+            <div className="text-xs text-gray-500 leading-tight">Proponowana cena zakupu</div>
+          )}
+          <div className="font-semibold">{toPLN(listing.price)}</div>
+        </div>
       </div>
       <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-sm text-gray-600 mb-2">
         <div>
