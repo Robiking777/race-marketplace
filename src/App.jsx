@@ -3,6 +3,10 @@ import React, { useEffect, useMemo, useState } from "react";
 // ----------------------------- Typy -----------------------------
 /** @typedef {"sell" | "buy"} ListingType */
 
+const DISTANCES = /** @type {const} */ (["5 km", "10 km", "Półmaraton", "Maraton", "Ultramaraton"]);
+
+/** @typedef {typeof DISTANCES[number]} Distance */
+
 /**
  * @typedef {Object} Listing
  * @property {string} id
@@ -13,6 +17,7 @@ import React, { useEffect, useMemo, useState } from "react";
  * @property {number} price
  * @property {string} contact
  * @property {string} [description]
+ * @property {Distance} [distance]
  * @property {number} createdAt // epoch ms
  */
 
@@ -25,7 +30,7 @@ function loadListings() {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return demoSeed();
     const parsed = JSON.parse(raw);
-    if (Array.isArray(parsed)) return parsed;
+    if (Array.isArray(parsed)) return migrateListings(parsed);
     return demoSeed();
   } catch {
     return demoSeed();
@@ -49,6 +54,36 @@ function clsx(...args) {
   return args.filter(Boolean).join(" ");
 }
 
+/**
+ * @param {string} raceName
+ * @returns {Distance | undefined}
+ */
+function inferDistance(raceName = "") {
+  const lower = raceName.toLowerCase();
+  if (lower.includes("ultra")) return "Ultramaraton";
+  if (lower.includes("pół") || lower.includes("pol") || lower.includes("half")) return "Półmaraton";
+  if (lower.includes("marat") && !lower.includes("pół")) return "Maraton";
+  if (lower.includes("10")) return "10 km";
+  if (lower.includes("5")) return "5 km";
+  return undefined;
+}
+
+/** @param {Listing[]} listings */
+function migrateListings(listings) {
+  let changed = false;
+  const migrated = listings.map((l) => {
+    if (l.distance) return l;
+    const inferred = inferDistance(l.raceName || "");
+    if (inferred) {
+      changed = true;
+      return { ...l, distance: inferred };
+    }
+    return l;
+  });
+  if (changed) saveListings(migrated);
+  return migrated;
+}
+
 function demoSeed() {
   /** @type {Listing[]} */
   const now = Date.now();
@@ -62,6 +97,7 @@ function demoSeed() {
       price: 250,
       contact: "ania@example.com",
       description: "Pakiet z możliwością oficjalnego przepisania.",
+      distance: "Półmaraton",
       createdAt: now - 1000 * 60 * 60 * 6,
     },
     {
@@ -73,6 +109,7 @@ function demoSeed() {
       price: 200,
       contact: "marek@example.com",
       description: "Kupię w rozsądnej cenie – najlepiej z koszulką M.",
+      distance: "Maraton",
       createdAt: now - 1000 * 60 * 60 * 24,
     },
     {
@@ -84,6 +121,7 @@ function demoSeed() {
       price: 120,
       contact: "ola@example.com",
       description: "Sprzedam, odbiór elektroniczny.",
+      distance: "10 km",
       createdAt: now - 1000 * 60 * 60 * 48,
     },
   ];
@@ -144,6 +182,7 @@ function ListingForm({ onAdd }) {
   const [raceName, setRaceName] = useState("");
   const [eventDate, setEventDate] = useState("");
   const [location, setLocation] = useState("");
+  const [distance, setDistance] = useState("");
   const [price, setPrice] = useState("");
   const [contact, setContact] = useState("");
   const [description, setDescription] = useState("");
@@ -154,6 +193,7 @@ function ListingForm({ onAdd }) {
     setRaceName("");
     setEventDate("");
     setLocation("");
+    setDistance("");
     setPrice("");
     setContact("");
     setDescription("");
@@ -162,6 +202,7 @@ function ListingForm({ onAdd }) {
 
   function validate() {
     if (!raceName.trim()) return "Podaj nazwę biegu.";
+    if (!distance) return "Wybierz dystans biegu.";
     if (!price || isNaN(Number(price)) || Number(price) <= 0) return "Podaj poprawną kwotę.";
     if (!contact.trim()) return "Podaj kontakt (e-mail/telefon).";
     if (!agree) return "Musisz zaakceptować regulamin i zasady transferu pakietu.";
@@ -183,6 +224,7 @@ function ListingForm({ onAdd }) {
       raceName: raceName.trim(),
       eventDate: eventDate || undefined,
       location: location || undefined,
+      distance: /** @type {Distance} */ (distance),
       price: Number(price),
       contact: contact.trim(),
       description: description?.trim() || undefined,
@@ -218,6 +260,24 @@ function ListingForm({ onAdd }) {
         </Field>
       </div>
 
+      <Field label="Dystans" required>
+        <select
+          value={distance}
+          onChange={(e) => setDistance(e.target.value)}
+          className="w-full px-3 py-2 rounded-xl border focus:outline-none focus:ring"
+          required
+        >
+          <option value="" disabled>
+            Wybierz dystans…
+          </option>
+          {DISTANCES.map((d) => (
+            <option key={d} value={d}>
+              {d}
+            </option>
+          ))}
+        </select>
+      </Field>
+
       <Field label={type === "sell" ? "Cena (PLN)" : "Budżet / proponowana kwota (PLN)"} required>
         <input inputMode="decimal" value={price} onChange={(e) => setPrice(e.target.value.replace(",", "."))} className="w-full px-3 py-2 rounded-xl border focus:outline-none focus:ring" placeholder="np. 199" />
       </Field>
@@ -248,6 +308,7 @@ function ListingForm({ onAdd }) {
 /** @param {{ listing: Listing, onDelete: (id:string)=>void }} props */
 function ListingCard({ listing, onDelete }) {
   const isSell = listing.type === "sell";
+  const distanceLabel = listing.distance || inferDistance(listing.raceName) || "—";
   return (
     <div id={listing.id} className="rounded-2xl border p-4 hover:shadow-sm transition bg-white">
       <div className="flex items-center justify-between gap-3 mb-2">
@@ -257,7 +318,7 @@ function ListingCard({ listing, onDelete }) {
         </div>
         <div className="text-right font-semibold">{toPLN(listing.price)}</div>
       </div>
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-sm text-gray-600 mb-2">
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-2 text-sm text-gray-600 mb-2">
         <div>
           <span className="block text-gray-500">Data</span>
           <span>{listing.eventDate || "—"}</span>
@@ -269,6 +330,10 @@ function ListingCard({ listing, onDelete }) {
         <div>
           <span className="block text-gray-500">Kontakt</span>
           <span className="break-all">{listing.contact}</span>
+        </div>
+        <div>
+          <span className="block text-gray-500">Dystans</span>
+          <span>{distanceLabel}</span>
         </div>
         <div>
           <span className="block text-gray-500">Dodano</span>
@@ -303,6 +368,7 @@ export default function App() {
   const [listings, setListings] = useState(/** @type {Listing[]} */([]));
   const [query, setQuery] = useState("");
   const [typeFilter, setTypeFilter] = useState(/** @type {"all"|ListingType} */("all"));
+  const [distanceFilter, setDistanceFilter] = useState(/** @type {"all" | Distance} */("all"));
   const [sort, setSort] = useState("newest");
 
   useEffect(() => {
@@ -330,7 +396,8 @@ export default function App() {
         l.raceName.toLowerCase().includes(q) ||
         (l.location || "").toLowerCase().includes(q) ||
         (l.description || "").toLowerCase().includes(q);
-      return okType && okQuery;
+      const okDistance = distanceFilter === "all" || (l.distance || inferDistance(l.raceName)) === distanceFilter;
+      return okType && okQuery && okDistance;
     });
 
     if (sort === "newest") arr = arr.sort((a, b) => b.createdAt - a.createdAt);
@@ -338,7 +405,7 @@ export default function App() {
     if (sort === "priceDesc") arr = arr.sort((a, b) => b.price - a.price);
 
     return arr;
-  }, [listings, query, typeFilter, sort]);
+  }, [listings, query, typeFilter, distanceFilter, sort]);
 
   function addListing(l) {
     setListings((prev) => [l, ...prev]);
@@ -426,6 +493,18 @@ function exportCSV() {
                   <option value="all">Wszystkie</option>
                   <option value="sell">Sprzedam</option>
                   <option value="buy">Kupię</option>
+                </select>
+                <select
+                  value={distanceFilter}
+                  onChange={(e) => setDistanceFilter(/** @type {"all" | Distance} */(e.target.value))}
+                  className="px-3 py-2 rounded-xl border"
+                >
+                  <option value="all">Wszystkie dystanse</option>
+                  {DISTANCES.map((d) => (
+                    <option key={d} value={d}>
+                      {d}
+                    </option>
+                  ))}
                 </select>
                 <select value={sort} onChange={(e) => setSort(e.target.value)} className="px-3 py-2 rounded-xl border">
                   <option value="newest">Najnowsze</option>
