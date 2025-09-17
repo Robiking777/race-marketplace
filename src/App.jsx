@@ -389,7 +389,7 @@ function ListingCard({ listing, onDelete }) {
           <div className="font-semibold">{toPLN(listing.price)}</div>
         </div>
       </div>
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-2 text-sm text-gray-600 mb-2">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-sm text-gray-600 mb-2">
         <div>
           <span className="block text-gray-500">Data</span>
           <span>{listing.eventDate || "—"}</span>
@@ -406,14 +406,13 @@ function ListingCard({ listing, onDelete }) {
           <span className="block text-gray-500">Dystans</span>
           <span>{distanceLabel}</span>
         </div>
-        <div>
-          <span className="block text-gray-500">Dodano</span>
-          <span>{new Date(listing.createdAt).toLocaleString("pl-PL")}</span>
-        </div>
       </div>
       {listing.description && (
         <p className="text-sm text-gray-800 mb-3">{listing.description}</p>
       )}
+      <div className="text-xs text-gray-500 mb-3">
+        Dodano: {new Date(listing.createdAt).toLocaleString("pl-PL")}
+      </div>
       <div className="flex items-center justify-between">
         <button onClick={() => copyPermalink(listing.id)} className="text-sm px-3 py-1.5 rounded-lg bg-neutral-100 hover:bg-neutral-200">Kopiuj link</button>
         <button onClick={() => onDelete(listing.id)} className="text-sm px-3 py-1.5 rounded-lg bg-rose-50 text-rose-700 hover:bg-rose-100">Usuń</button>
@@ -555,36 +554,32 @@ function exportCSV() {
         </div>
 
         <div className="lg:col-span-2 space-y-6">
-          <Section
-            title="Ogłoszenia"
-            right={
-              <div className="flex items-center gap-2">
-                <input value={query} onChange={(e) => setQuery(e.target.value)} className="px-3 py-2 rounded-xl border w-48" placeholder="Szukaj…" />
-                <select value={typeFilter} onChange={(e) => setTypeFilter(/** @type any */(e.target.value))} className="px-3 py-2 rounded-xl border">
-                  <option value="all">Wszystkie</option>
-                  <option value="sell">Sprzedam</option>
-                  <option value="buy">Kupię</option>
-                </select>
-                <select
-                  value={distanceFilter}
-                  onChange={(e) => setDistanceFilter(/** @type {"all" | Distance} */(e.target.value))}
-                  className="px-3 py-2 rounded-xl border"
-                >
-                  <option value="all">Wszystkie dystanse</option>
-                  {DISTANCES.map((d) => (
-                    <option key={d} value={d}>
-                      {d}
-                    </option>
-                  ))}
-                </select>
-                <select value={sort} onChange={(e) => setSort(e.target.value)} className="px-3 py-2 rounded-xl border">
-                  <option value="newest">Najnowsze</option>
-                  <option value="priceAsc">Cena rosnąco</option>
-                  <option value="priceDesc">Cena malejąco</option>
-                </select>
-              </div>
-            }
-          >
+          <Section title="Ogłoszenia" right={null}>
+            <div className="mb-4 flex items-center gap-2">
+              <input value={query} onChange={(e) => setQuery(e.target.value)} className="px-3 py-2 rounded-xl border w-48" placeholder="Szukaj…" />
+              <select value={typeFilter} onChange={(e) => setTypeFilter(/** @type any */(e.target.value))} className="px-3 py-2 rounded-xl border">
+                <option value="all">Wszystkie</option>
+                <option value="sell">Sprzedam</option>
+                <option value="buy">Kupię</option>
+              </select>
+              <select
+                value={distanceFilter}
+                onChange={(e) => setDistanceFilter(/** @type {"all" | Distance} */(e.target.value))}
+                className="px-3 py-2 rounded-xl border"
+              >
+                <option value="all">Wszystkie dystanse</option>
+                {DISTANCES.map((d) => (
+                  <option key={d} value={d}>
+                    {d}
+                  </option>
+                ))}
+              </select>
+              <select value={sort} onChange={(e) => setSort(e.target.value)} className="px-3 py-2 rounded-xl border">
+                <option value="newest">Najnowsze</option>
+                <option value="priceAsc">Cena rosnąco</option>
+                <option value="priceDesc">Cena malejąco</option>
+              </select>
+            </div>
             {filtered.length === 0 ? (
               <div className="text-sm text-gray-600">Brak ogłoszeń dla wybranych filtrów.</div>
             ) : (
