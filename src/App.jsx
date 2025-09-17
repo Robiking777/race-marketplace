@@ -371,12 +371,18 @@ function ListingForm({ onAdd }) {
   );
 }
 
-/** @param {{ listing: Listing, onDelete: (id:string)=>void }} props */
-function ListingCard({ listing, onDelete }) {
+/** @param {{ listing: Listing, onDelete: (id:string)=>void, onOpen: (listing: Listing)=>void }} props */
+function ListingCard({ listing, onDelete, onOpen }) {
   const isSell = listing.type === "sell";
   const distanceLabel = listing.distance || inferDistance(listing.raceName) || "—";
   return (
-    <div id={listing.id} className="rounded-2xl border p-4 hover:shadow-sm transition bg-white">
+    <div
+      id={listing.id}
+      className="rounded-2xl border p-4 hover:shadow-sm transition bg-white cursor-pointer"
+      onClick={() => onOpen(listing)}
+      tabIndex={0}
+      onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && onOpen(listing)}
+    >
       <div className="flex items-center justify-between gap-3 mb-2">
         <div className="flex items-center gap-2">
           <Badge color={isSell ? "bg-emerald-100 text-emerald-800" : "bg-sky-100 text-sky-800"}>{isSell ? "SPRZEDAM" : "KUPIĘ"}</Badge>
@@ -399,10 +405,6 @@ function ListingCard({ listing, onDelete }) {
           <span>{listing.location || "—"}</span>
         </div>
         <div>
-          <span className="block text-gray-500">Kontakt</span>
-          <span className="break-all">{listing.contact}</span>
-        </div>
-        <div>
           <span className="block text-gray-500">Dystans</span>
           <span>{distanceLabel}</span>
         </div>
@@ -414,8 +416,85 @@ function ListingCard({ listing, onDelete }) {
         Dodano: {new Date(listing.createdAt).toLocaleString("pl-PL")}
       </div>
       <div className="flex items-center justify-between">
-        <button onClick={() => copyPermalink(listing.id)} className="text-sm px-3 py-1.5 rounded-lg bg-neutral-100 hover:bg-neutral-200">Kopiuj link</button>
-        <button onClick={() => onDelete(listing.id)} className="text-sm px-3 py-1.5 rounded-lg bg-rose-50 text-rose-700 hover:bg-rose-100">Usuń</button>
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            copyPermalink(listing.id);
+          }}
+          className="text-sm px-3 py-1.5 rounded-lg bg-neutral-100 hover:bg-neutral-200"
+        >
+          Kopiuj link
+        </button>
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            onDelete(listing.id);
+          }}
+          className="text-sm px-3 py-1.5 rounded-lg bg-rose-50 text-rose-700 hover:bg-rose-100"
+        >
+          Usuń
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function DetailModal({ listing, onClose }) {
+  if (!listing) return null;
+  const isSell = listing.type === "sell";
+  return (
+    <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center" onClick={onClose}>
+      <div className="bg-white rounded-2xl w-[min(92vw,700px)] p-5 shadow-xl" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-start justify-between gap-3 mb-3">
+          <div className="flex items-center gap-2">
+            <span className={"px-2 py-0.5 rounded-full text-xs font-medium " + (isSell ? "bg-emerald-100 text-emerald-800" : "bg-sky-100 text-sky-800")}>
+              {isSell ? "SPRZEDAM" : "KUPIĘ"}
+            </span>
+            <h3 className="text-xl font-semibold">{listing.raceName}</h3>
+          </div>
+          <button className="px-2 py-1 rounded-lg bg-neutral-100 hover:bg-neutral-200" onClick={onClose}>
+            Zamknij
+          </button>
+        </div>
+        <div className="mb-3">
+          {!isSell && <div className="text-xs text-gray-500 leading-tight">Proponowana cena zakupu</div>}
+          <div className="text-2xl font-semibold">{toPLN(listing.price)}</div>
+        </div>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm text-gray-700 mb-3">
+          <div>
+            <div className="text-gray-500">Data</div>
+            <div>{listing.eventDate || "—"}</div>
+          </div>
+          <div>
+            <div className="text-gray-500">Lokalizacja</div>
+            <div>{listing.location || "—"}</div>
+          </div>
+          {listing.distance && (
+            <div>
+              <div className="text-gray-500">Dystans</div>
+              <div>{listing.distance}</div>
+            </div>
+          )}
+          <div>
+            <div className="text-gray-500">Dodano</div>
+            <div>{new Date(listing.createdAt).toLocaleString("pl-PL")}</div>
+          </div>
+        </div>
+        {listing.description && <p className="text-sm text-gray-800 mb-4">{listing.description}</p>}
+        <div className="border-t pt-3">
+          <div className="text-sm text-gray-500 mb-1">Kontakt</div>
+          <div className="flex items-center gap-2">
+            <span className="text-sm break-all">{listing.contact}</span>
+            <button
+              className="text-sm px-3 py-1.5 rounded-lg bg-neutral-100 hover:bg-neutral-200"
+              onClick={() => {
+                navigator.clipboard?.writeText(listing.contact);
+              }}
+            >
+              Kopiuj
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -440,6 +519,7 @@ export default function App() {
   const [typeFilter, setTypeFilter] = useState(/** @type {"all"|ListingType} */("all"));
   const [distanceFilter, setDistanceFilter] = useState(/** @type {"all" | Distance} */("all"));
   const [sort, setSort] = useState("newest");
+  const [selected, setSelected] = useState/** @type {(Listing|null)} */(null);
 
   useEffect(() => {
     const l = loadListings();
@@ -585,13 +665,15 @@ function exportCSV() {
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 {filtered.map((l) => (
-                  <ListingCard key={l.id} listing={l} onDelete={deleteListing} />
+                  <ListingCard key={l.id} listing={l} onDelete={deleteListing} onOpen={setSelected} />
                 ))}
               </div>
             )}
           </Section>
         </div>
       </main>
+
+      <DetailModal listing={selected} onClose={() => setSelected(null)} />
 
       <footer className="max-w-6xl mx-auto px-4 pb-12 pt-2 text-xs text-gray-500">
         <p>
