@@ -349,18 +349,43 @@ export default function App() {
     setListings((prev) => prev.filter((x) => x.id !== id));
   }
 
-  function exportCSV() {
-    const headers = ["id","typ","bieg","data","lokalizacja","cena","kontakt","opis","dodano"];
-    const rows = listings.map((l) => [l.id, l.type, l.raceName, l.eventDate || "", l.location || "", l.price, l.contact, (l.description || "").replace(/\n/g, " "), new Date(l.createdAt).toISOString()]);
-    const csv = [headers.join(";"), ...rows.map((r) => r.map((x) => String(x).includes(";") ? f'"{String(x).replace(/"/g, '""')}"' : x).join(";"))].join("\n");
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "ogloszenia.csv";
-    a.click();
-    URL.revokeObjectURL(url);
-  }
+function exportCSV() {
+  const headers = ["id","typ","bieg","data","lokalizacja","cena","kontakt","opis","dodano"];
+  const rows = listings.map((l) => [
+    l.id,
+    l.type,
+    l.raceName,
+    l.eventDate || "",
+    l.location || "",
+    l.price,
+    l.contact,
+    (l.description || "").replace(/\n/g, " "),
+    new Date(l.createdAt).toISOString()
+  ]);
+
+  // Poprawne „escape’owanie” wartości do CSV (średnik, cudzysłów, nowe linie)
+  const escapeCSV = (val) => {
+    const s = String(val);
+    if (/[;"\n]/.test(s)) {
+      return '"' + s.replace(/"/g, '""') + '"';
+    }
+    return s;
+    };
+
+  const csv = [
+    headers.join(";"),
+    ...rows.map((r) => r.map(escapeCSV).join(";"))
+  ].join("\n");
+
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "ogloszenia.csv";
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 
   return (
     <div className="min-h-screen bg-neutral-50 text-neutral-900">
