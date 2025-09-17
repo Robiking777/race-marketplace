@@ -52,9 +52,8 @@ function clsx(...args) {
 function demoSeed() {
   /** @type {Listing[]} */
   const now = Date.now();
-  const data = [
+  const baseData = [
     {
-      id: cryptoRandom(),
       type: "sell",
       raceName: "Półmaraton Warszawski",
       eventDate: "2025-10-05",
@@ -62,10 +61,8 @@ function demoSeed() {
       price: 250,
       contact: "ania@example.com",
       description: "Pakiet z możliwością oficjalnego przepisania.",
-      createdAt: now - 1000 * 60 * 60 * 6,
     },
     {
-      id: cryptoRandom(),
       type: "buy",
       raceName: "Cracovia Maraton",
       eventDate: "2026-04-26",
@@ -73,20 +70,193 @@ function demoSeed() {
       price: 200,
       contact: "marek@example.com",
       description: "Kupię w rozsądnej cenie – najlepiej z koszulką M.",
-      createdAt: now - 1000 * 60 * 60 * 24,
     },
     {
-      id: cryptoRandom(),
       type: "sell",
-      raceName: "Bieg Niepodległości",
+      raceName: "Bieg Niepodległości 5 km",
       eventDate: "2025-11-11",
       location: "Poznań",
       price: 120,
       contact: "ola@example.com",
       description: "Sprzedam, odbiór elektroniczny.",
-      createdAt: now - 1000 * 60 * 60 * 48,
+    },
+    {
+      type: "buy",
+      raceName: "Bieg Ursynowa 5 km",
+      eventDate: "2025-06-14",
+      location: "Warszawa",
+      price: 90,
+      contact: "ewa.ursynow@example.com",
+      description: "Szukam pakietu na szybką piątkę – preferuję odbiór cyfrowy.",
+    },
+    {
+      type: "sell",
+      raceName: "Krakowska Dycha 10 km",
+      eventDate: "2025-09-07",
+      location: "Kraków",
+      price: 150,
+      contact: "kasia.dycha@example.com",
+      description: "Oddam pakiet na 10 km, rozmiar koszulki damskiej S.",
+    },
+    {
+      type: "buy",
+      raceName: "Białystok Biega 10 km",
+      eventDate: "2025-05-18",
+      location: "Białystok",
+      price: 140,
+      contact: "piotr.bstok@example.com",
+      description: "Kupię pakiet 10 km, mogę zapłacić przelewem BLIK.",
+    },
+    {
+      type: "sell",
+      raceName: "Silesia 10K",
+      eventDate: "2025-10-12",
+      location: "Katowice",
+      price: 160,
+      contact: "lukasz.silesia@example.com",
+      description: "Sprzedam pakiet z pełnym zestawem startowym, odbiór mailowy.",
+    },
+    {
+      type: "buy",
+      raceName: "Gdańska Dycha 10 km",
+      eventDate: "2025-08-23",
+      location: "Gdańsk",
+      price: 150,
+      contact: "magda.gdansk@example.com",
+      description: "Chętnie odkupię pakiet – biegam z numerem startowym 400+.",
+    },
+    {
+      type: "sell",
+      raceName: "Półmaraton Wrocławski",
+      eventDate: "2025-09-14",
+      location: "Wrocław",
+      price: 230,
+      contact: "+48 600 123 456",
+      description: "Pakiet z opcją przepisu przez panel organizatora.",
+    },
+    {
+      type: "buy",
+      raceName: "Półmaraton Gdynia",
+      eventDate: "2026-03-22",
+      location: "Gdynia",
+      price: 220,
+      contact: "ola.gdynia@example.com",
+      description: "Szukam pakietu na wiosenny start – odbiór zdalny.",
+    },
+    {
+      type: "sell",
+      raceName: "Półmaraton Poznań",
+      eventDate: "2025-04-06",
+      location: "Poznań",
+      price: 240,
+      contact: "arek.poznan@example.com",
+      description: "Sprzedam pakiet, oddam także voucher na pasta party.",
+    },
+    {
+      type: "buy",
+      raceName: "Półmaraton Praski",
+      eventDate: "2025-09-06",
+      location: "Warszawa",
+      price: 210,
+      contact: "praga.runner@example.com",
+      description: "Kupię pakiet w dobrej cenie – rozmiar koszulki M.",
+    },
+    {
+      type: "sell",
+      raceName: "Orlen Warsaw Marathon",
+      eventDate: "2026-04-19",
+      location: "Warszawa",
+      price: 320,
+      contact: "jan.orlen@example.com",
+      description: "Oddam pakiet maratoński, odbiór osobisty lub online.",
+    },
+    {
+      type: "buy",
+      raceName: "Maraton Łódź",
+      eventDate: "2025-04-13",
+      location: "Łódź",
+      price: 300,
+      contact: "lodz.maraton@example.com",
+      description: "Poszukuję pakietu – mogę spotkać się przed biegiem.",
+    },
+    {
+      type: "sell",
+      raceName: "Maraton Toruń",
+      eventDate: "2025-10-26",
+      location: "Toruń",
+      price: 280,
+      contact: "torun.runner@example.com",
+      description: "Sprzedam pakiet na maraton, do oddania od ręki.",
+    },
+    {
+      type: "buy",
+      raceName: "Maraton Gdańsk",
+      eventDate: "2025-08-31",
+      location: "Gdańsk",
+      price: 310,
+      contact: "gdn.maraton@example.com",
+      description: "Kupię pakiet, odbiorę elektronicznie po przepisaniu.",
+    },
+    {
+      type: "sell",
+      raceName: "Ultra Trail Bieszczady 70 km",
+      eventDate: "2025-09-20",
+      location: "Cisna",
+      price: 640,
+      contact: "ultra.bieszczady@example.com",
+      description: "Sprzedam pakiet na wersję ultra, w cenie koszulka L.",
+    },
+    {
+      type: "buy",
+      raceName: "Ultra Mazury 120 km",
+      eventDate: "2025-07-12",
+      location: "Giżycko",
+      price: 700,
+      contact: "mazury.ultra@example.com",
+      description: "Kupię pakiet na edycję ultra – zależy mi na oficjalnym transferze.",
+    },
+    {
+      type: "sell",
+      raceName: "Łemkowyna Ultra 80 km",
+      eventDate: "2025-10-19",
+      location: "Komańcza",
+      price: 590,
+      contact: "lemkowyna@example.com",
+      description: "Oddam pakiet 80 km, rozmiar koszulki męskiej M.",
+    },
+    {
+      type: "buy",
+      raceName: "Rzeźnik Ultra 100 km",
+      eventDate: "2026-06-01",
+      location: "Ustrzyki Dolne",
+      price: 650,
+      contact: "rzeznik.team@example.com",
+      description: "Szukam pakietu na duet – dogadamy szczegóły telefonicznie.",
+    },
+    {
+      type: "sell",
+      raceName: "Poznań Business Run 5 km",
+      eventDate: "2025-09-07",
+      location: "Poznań",
+      price: 95,
+      contact: "bizrun.poznan@example.com",
+      description: "Sprzedam pojedynczy pakiet z drużyny firmowej.",
+    },
+    {
+      type: "buy",
+      raceName: "Szczecińska Piątka Nocna 5 km",
+      eventDate: "2025-08-09",
+      location: "Szczecin",
+      price: 85,
+      contact: "szczecin.night@example.com",
+      description: "Chętnie odkupię nocny pakiet – odbiór w dniu biegu.",
     },
   ];
+  const data = baseData.map((item, index) => ({
+    id: cryptoRandom(),
+    ...item,
+    createdAt: now - index * 1000 * 60 * 60 * 6,
+  }));
   saveListings(data);
   return data;
 }
@@ -349,11 +519,16 @@ export default function App() {
     setListings((prev) => prev.filter((x) => x.id !== id));
   }
 
-function exportCSV() {
-  const headers = ["id","typ","bieg","data","lokalizacja","cena","kontakt","opis","dodano"];
-  const rows = listings.map((l) => [
-    l.id,
-    l.type,
+  function handleResetDemo() {
+    localStorage.removeItem(STORAGE_KEY);
+    window.location.reload();
+  }
+
+  function exportCSV() {
+    const headers = ["id","typ","bieg","data","lokalizacja","cena","kontakt","opis","dodano"];
+    const rows = listings.map((l) => [
+      l.id,
+      l.type,
     l.raceName,
     l.eventDate || "",
     l.location || "",
@@ -414,6 +589,14 @@ function exportCSV() {
               <li>Unikaj przedpłat bez zabezpieczenia. Wybierz odbiór osobisty lub bezpieczne płatności.</li>
             </ul>
           </Section>
+          <div className="mt-4">
+            <button
+              onClick={handleResetDemo}
+              className="text-xs px-3 py-1.5 rounded-lg border bg-white hover:bg-neutral-50"
+            >
+              Przywróć dane demo
+            </button>
+          </div>
         </div>
 
         <div className="lg:col-span-2 space-y-6">
