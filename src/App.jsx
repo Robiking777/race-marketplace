@@ -50,6 +50,12 @@ function toPLN(n) {
   }
 }
 
+const NBHYPHEN = "\u2011"; // nierozdzielający łącznik
+function noWrapDate(s) {
+  if (!s) return "—";
+  return String(s).replace(/-/g, NBHYPHEN);
+}
+
 function clsx(...args) {
   return args.filter(Boolean).join(" ");
 }
@@ -398,7 +404,9 @@ function ListingCard({ listing, onDelete, onOpen }) {
       <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-sm text-gray-600 mb-2">
         <div>
           <span className="block text-gray-500">Data</span>
-          <span>{listing.eventDate || "—"}</span>
+          <span className="whitespace-nowrap tabular-nums">
+            {noWrapDate(listing.eventDate)}
+          </span>
         </div>
         <div>
           <span className="block text-gray-500">Lokalizacja</span>
@@ -463,7 +471,9 @@ function DetailModal({ listing, onClose }) {
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm text-gray-700 mb-3">
           <div>
             <div className="text-gray-500">Data</div>
-            <div>{listing.eventDate || "—"}</div>
+            <div className="whitespace-nowrap tabular-nums">
+              {noWrapDate(listing.eventDate)}
+            </div>
           </div>
           <div>
             <div className="text-gray-500">Lokalizacja</div>
