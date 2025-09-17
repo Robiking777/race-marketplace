@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
+import { supabase } from "./lib/supabase";
 
 // ----------------------------- Typy -----------------------------
 /** @typedef {"sell" | "buy"} ListingType */
@@ -511,6 +512,104 @@ function copyPermalink(id) {
   }
 }
 
+function AuthModal({ open, onClose }) {
+  const [mode, setMode] = useState("login");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [msg, setMsg] = useState("");
+
+  if (!open) return null;
+
+  function handleClose() {
+    setMode("login");
+    setEmail("");
+    setPassword("");
+    setMsg("");
+    setLoading(false);
+    onClose();
+  }
+
+  async function submit(e) {
+    e.preventDefault();
+    setLoading(true);
+    setMsg("");
+    const action =
+      mode === "login"
+        ? supabase.auth.signInWithPassword({ email, password })
+        : supabase.auth.signUp({ email, password });
+    const { error } = await action;
+    if (error) {
+      setMsg(error.message);
+      setLoading(false);
+      return;
+    }
+
+    setMsg(mode === "login" ? "Zalogowano." : "Konto utworzone. Możesz się zalogować.");
+    if (mode === "login") {
+      handleClose();
+      return;
+    }
+
+    setLoading(false);
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center" onClick={handleClose}>
+      <div
+        className="bg-white rounded-2xl w-[min(92vw,420px)] p-5 shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-lg font-semibold">{mode === "login" ? "Zaloguj się" : "Załóż konto"}</h3>
+          <button className="px-2 py-1 rounded-lg bg-neutral-100 hover:bg-neutral-200" onClick={handleClose}>
+            Zamknij
+          </button>
+        </div>
+        <form onSubmit={submit} className="space-y-3">
+          <label className="block">
+            <span className="block text-sm text-gray-600 mb-1">E-mail</span>
+            <input
+              className="w-full px-3 py-2 rounded-xl border"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              required
+            />
+          </label>
+          <label className="block">
+            <span className="block text-sm text-gray-600 mb-1">Hasło</span>
+            <input
+              type="password"
+              className="w-full px-3 py-2 rounded-xl border"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              required
+            />
+          </label>
+          {msg && <div className="text-sm text-gray-600">{msg}</div>}
+          <button
+            disabled={loading}
+            className="w-full px-4 py-2 rounded-xl bg-neutral-900 text-white hover:opacity-90"
+          >
+            {loading ? "Przetwarzam…" : mode === "login" ? "Zaloguj się" : "Zarejestruj"}
+          </button>
+        </form>
+        <div className="text-xs text-gray-500 mt-3">
+          {mode === "login" ? (
+            <button className="underline" onClick={() => setMode("register")}>
+              Nie masz konta? Zarejestruj się
+            </button>
+          ) : (
+            <button className="underline" onClick={() => setMode("login")}>
+              Masz konto? Zaloguj się
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ------------------------------- App -----------------------------
 
 export default function App() {
@@ -520,6 +619,8 @@ export default function App() {
   const [distanceFilter, setDistanceFilter] = useState(/** @type {"all" | Distance} */("all"));
   const [sort, setSort] = useState("newest");
   const [selected, setSelected] = useState/** @type {(Listing|null)} */(null);
+  const [session, setSession] = useState(null);
+  const [authOpen, setAuthOpen] = useState(false);
 
   useEffect(() => {
     const l = loadListings();
@@ -537,6 +638,14 @@ export default function App() {
   useEffect(() => {
     saveListings(listings);
   }, [listings]);
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => setSession(session));
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, s) => setSession(s));
+    return () => subscription.unsubscribe();
+  }, []);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -566,42 +675,42 @@ export default function App() {
     setListings((prev) => prev.filter((x) => x.id !== id));
   }
 
-function exportCSV() {
-  const headers = ["id","typ","bieg","data","lokalizacja","cena","kontakt","opis","dodano"];
-  const rows = listings.map((l) => [
-    l.id,
-    l.type,
-    l.raceName,
-    l.eventDate || "",
-    l.location || "",
-    l.price,
-    l.contact,
-    (l.description || "").replace(/\n/g, " "),
-    new Date(l.createdAt).toISOString()
-  ]);
+  function exportCSV() {
+    const headers = ["id","typ","bieg","data","lokalizacja","cena","kontakt","opis","dodano"];
+    const rows = listings.map((l) => [
+      l.id,
+      l.type,
+      l.raceName,
+      l.eventDate || "",
+      l.location || "",
+      l.price,
+      l.contact,
+      (l.description || "").replace(/\n/g, " "),
+      new Date(l.createdAt).toISOString()
+    ]);
 
-  // Poprawne „escape’owanie” wartości do CSV (średnik, cudzysłów, nowe linie)
-  const escapeCSV = (val) => {
-    const s = String(val);
-    if (/[;"\n]/.test(s)) {
-      return '"' + s.replace(/"/g, '""') + '"';
-    }
-    return s;
+    // Poprawne „escape’owanie” wartości do CSV (średnik, cudzysłów, nowe linie)
+    const escapeCSV = (val) => {
+      const s = String(val);
+      if (/[;"\n]/.test(s)) {
+        return '"' + s.replace(/"/g, '""') + '"';
+      }
+      return s;
     };
 
-  const csv = [
-    headers.join(";"),
-    ...rows.map((r) => r.map(escapeCSV).join(";"))
-  ].join("\n");
+    const csv = [
+      headers.join(";"),
+      ...rows.map((r) => r.map(escapeCSV).join(";"))
+    ].join("\n");
 
-  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = "ogloszenia.csv";
-  a.click();
-  URL.revokeObjectURL(url);
-}
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "ogloszenia.csv";
+    a.click();
+    URL.revokeObjectURL(url);
+  }
 
 
   return (
@@ -615,14 +724,49 @@ function exportCSV() {
           </div>
           <div className="ml-auto flex items-center gap-2">
             <button onClick={exportCSV} className="px-3 py-1.5 rounded-xl border bg-white hover:bg-neutral-50">Eksportuj CSV</button>
+            {session ? (
+              <div className="flex items-center gap-2">
+                <span className="text-sm text-gray-600">{session.user.email}</span>
+                <button
+                  className="px-3 py-1.5 rounded-xl border bg-white hover:bg-neutral-50"
+                  onClick={() => supabase.auth.signOut()}
+                >
+                  Wyloguj
+                </button>
+              </div>
+            ) : (
+              <button
+                className="px-3 py-1.5 rounded-xl border bg-white hover:bg-neutral-50"
+                onClick={() => setAuthOpen(true)}
+              >
+                Zaloguj się
+              </button>
+            )}
           </div>
         </div>
       </header>
 
       <main className="max-w-6xl mx-auto px-4 py-6 grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div className="lg:col-span-1">
-          <Section title="Dodaj ogłoszenie" right={<Badge>bez logowania</Badge>}>
-            <ListingForm onAdd={addListing} />
+          <Section
+            title="Dodaj ogłoszenie"
+            right={<Badge>{session ? "zalogowano" : "konto wymagane"}</Badge>}
+          >
+            {session ? (
+              <ListingForm onAdd={addListing} />
+            ) : (
+              <div className="space-y-3">
+                <p className="text-sm text-gray-700">
+                  Zaloguj się, aby dodać ogłoszenie. Ogłoszenia możesz przeglądać bez logowania.
+                </p>
+                <button
+                  className="px-4 py-2 rounded-xl bg-neutral-900 text-white hover:opacity-90"
+                  onClick={() => setAuthOpen(true)}
+                >
+                  Zaloguj się / Zarejestruj
+                </button>
+              </div>
+            )}
           </Section>
           <Section title="Wskazówki" right={null}>
             <ul className="list-disc pl-5 text-sm text-gray-700 space-y-1">
@@ -681,6 +825,8 @@ function exportCSV() {
           upewnij się, że działasz zgodnie z regulaminem organizatora.
         </p>
       </footer>
+
+      <AuthModal open={authOpen} onClose={() => setAuthOpen(false)} />
     </div>
   );
 }
