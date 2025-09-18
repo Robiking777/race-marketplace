@@ -20,6 +20,10 @@ const DISTANCES = /** @type {const} */ (["5 km", "10 km", "Półmaraton", "Marat
  * @property {string} [description]
  * @property {Distance} [distance]
  * @property {number} createdAt // epoch ms
+ * @property {string} [bib]
+ * @property {"verified"|"not_found"|"unknown"|"none"} [proof_status]
+ * @property {string} [proof_source_url]
+ * @property {number} [proof_checked_at]
  * @property {string} [ownerId]
  * @property {string} [owner_id]
  * @property {string} [user_id]
@@ -72,6 +76,44 @@ function noWrapDate(s) {
 
 function clsx(...args) {
   return args.filter(Boolean).join(" ");
+}
+
+const BULLET = "\u2022";
+
+function maskBib(bib = "") {
+  const value = String(bib || "").trim();
+  if (!value) return "";
+  if (value.length <= 3) return value;
+  const hidden = BULLET.repeat(value.length - 3);
+  return hidden + value.slice(-3);
+}
+
+const PROOF_STATUS_META = {
+  verified: { icon: "✅", label: "Zweryfikowany", color: "bg-emerald-100 text-emerald-800" },
+  not_found: { icon: "❌", label: "Nie znaleziono", color: "bg-rose-100 text-rose-700" },
+  unknown: { icon: "⚪", label: "Nie udało się sprawdzić", color: "bg-gray-100 text-gray-700" },
+  none: { icon: "⚪", label: "Nie zweryfikowano", color: "bg-gray-100 text-gray-500" },
+};
+
+function ProofStatusBadge({ status = "none", source, className = "", stopClick }) {
+  const meta = PROOF_STATUS_META[status] || PROOF_STATUS_META.none;
+  return (
+    <span className={clsx("inline-flex items-center gap-1 text-xs font-medium px-2 py-1 rounded-full", meta.color, className)}>
+      <span aria-hidden>{meta.icon}</span>
+      <span>{meta.label}</span>
+      {status === "verified" && source && (
+        <a
+          href={source}
+          target="_blank"
+          rel="noreferrer"
+          onClick={stopClick}
+          className="underline decoration-dotted font-normal"
+        >
+          (źródło)
+        </a>
+      )}
+    </span>
+  );
 }
 
 /**
@@ -133,6 +175,10 @@ function demoSeed() {
       contact: "ania@example.com",
       description: "Pakiet z możliwością oficjalnego przepisania.",
       distance: "Półmaraton",
+      bib: "A123",
+      proof_status: "verified",
+      proof_source_url: "https://example.com/lista-startowa",
+      proof_checked_at: now - 1000 * 60 * 30,
       createdAt: now - 1000 * 60 * 60 * 6,
     },
     {
@@ -157,6 +203,10 @@ function demoSeed() {
       contact: "ola@example.com",
       description: "Sprzedam, odbiór elektroniczny.",
       distance: "10 km",
+      bib: "PL-908",
+      proof_status: "not_found",
+      proof_source_url: "https://example.com/lista-niepodleglosc",
+      proof_checked_at: now - 1000 * 60 * 60 * 5,
       createdAt: now - 1000 * 60 * 60 * 48,
     },
     {
@@ -168,6 +218,10 @@ function demoSeed() {
       price: 80,
       contact: "kasia@example.com",
       description: "Startówki z pamiątkowym medalem i strefą rodzinną.",
+      bib: "ZD-77",
+      proof_status: "unknown",
+      proof_source_url: "https://example.com/lista-zdrowie",
+      proof_checked_at: now - 1000 * 60 * 60 * 30,
       createdAt: now - 1000 * 60 * 60 * 72,
     },
     {
@@ -190,6 +244,8 @@ function demoSeed() {
       price: 110,
       contact: "ewa@example.com",
       description: "Pakiet wraz z koszulką rozmiar S, odbiór na miejscu.",
+      bib: "GD15-221",
+      proof_status: "none",
       createdAt: now - 1000 * 60 * 60 * 120,
     },
     {
@@ -212,6 +268,10 @@ function demoSeed() {
       price: 320,
       contact: "tomek@example.com",
       description: "Nie startuję – oddam z opłaconym noclegiem w hostelu.",
+      bib: "UM-55-12",
+      proof_status: "verified",
+      proof_source_url: "https://example.com/lista-mazury",
+      proof_checked_at: now - 1000 * 60 * 60 * 12,
       createdAt: now - 1000 * 60 * 60 * 168,
     },
     {
@@ -223,6 +283,8 @@ function demoSeed() {
       price: 450,
       contact: "magda@example.com",
       description: "Przepiszę pełny pakiet + pasta party, odbiór online.",
+      bib: "BU100-7",
+      proof_status: "none",
       createdAt: now - 1000 * 60 * 60 * 192,
     },
   ];
@@ -287,6 +349,13 @@ function ListingForm({ onAdd, ownerId }) {
   const [price, setPrice] = useState("");
   const [contact, setContact] = useState("");
   const [description, setDescription] = useState("");
+  const [bib, setBib] = useState("");
+  const [startListUrl, setStartListUrl] = useState("");
+  const [proofStatus, setProofStatus] = useState("");
+  const [proofSourceUrl, setProofSourceUrl] = useState("");
+  const [proofCheckedAt, setProofCheckedAt] = useState(null);
+  const [verifying, setVerifying] = useState(false);
+  const [proofError, setProofError] = useState("");
   const [agree, setAgree] = useState(false);
   const [msg, setMsg] = useState("");
 
@@ -298,6 +367,13 @@ function ListingForm({ onAdd, ownerId }) {
     setPrice("");
     setContact("");
     setDescription("");
+    setBib("");
+    setStartListUrl("");
+    setProofStatus("");
+    setProofSourceUrl("");
+    setProofCheckedAt(null);
+    setVerifying(false);
+    setProofError("");
     setAgree(false);
   }
 
@@ -306,6 +382,13 @@ function ListingForm({ onAdd, ownerId }) {
     if (!distance) return "Wybierz dystans biegu.";
     if (!price || isNaN(Number(price)) || Number(price) <= 0) return "Podaj poprawną kwotę.";
     if (!contact.trim()) return "Podaj kontakt (e-mail/telefon).";
+    if (type === "sell") {
+      const trimmedBib = bib.trim();
+      if (!trimmedBib) return "Podaj numer startowy (BIB).";
+      if (!/^[A-Za-z0-9-]{1,12}$/.test(trimmedBib)) {
+        return "Numer BIB może zawierać litery, cyfry oraz myślnik (max 12 znaków).";
+      }
+    }
     if (!agree) return "Musisz zaakceptować regulamin i zasady transferu pakietu.";
     return "";
   }
@@ -332,10 +415,87 @@ function ListingForm({ onAdd, ownerId }) {
       createdAt: Date.now(),
       ...(ownerId ? { ownerId } : {}),
     };
+    if (type === "sell") {
+      const trimmedBib = bib.trim();
+      const trimmedUrl = startListUrl.trim();
+      l.bib = trimmedBib;
+      l.proof_status = (proofStatus || "none");
+      if (proofSourceUrl || trimmedUrl) {
+        l.proof_source_url = proofSourceUrl || trimmedUrl;
+      }
+      if (proofCheckedAt) {
+        l.proof_checked_at = proofCheckedAt;
+      }
+    }
     onAdd(l);
     reset();
     setMsg("Dodano ogłoszenie ✔");
     setTimeout(() => setMsg(""), 2000);
+  }
+
+  useEffect(() => {
+    setProofError("");
+    setProofStatus("");
+    setProofSourceUrl("");
+    setProofCheckedAt(null);
+  }, [bib, startListUrl]);
+
+  useEffect(() => {
+    if (type !== "sell") {
+      setBib("");
+      setStartListUrl("");
+      setProofStatus("");
+      setProofSourceUrl("");
+      setProofCheckedAt(null);
+      setProofError("");
+      setVerifying(false);
+    }
+  }, [type]);
+
+  async function handleVerify() {
+    if (type !== "sell") return;
+    const trimmedBib = bib.trim();
+    const trimmedUrl = startListUrl.trim();
+    if (!trimmedBib || !trimmedUrl) return;
+    if (!/^[A-Za-z0-9-]{1,12}$/.test(trimmedBib)) {
+      setProofError("Numer BIB ma nieprawidłowy format.");
+      return;
+    }
+    try {
+      new URL(trimmedUrl);
+    } catch {
+      setProofError("Podaj poprawny link do listy startowej.");
+      return;
+    }
+    setVerifying(true);
+    setProofError("");
+    try {
+      const resp = await fetch("/api/verify-bib-url", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ url: trimmedUrl, bib: trimmedBib }),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok || !data || typeof data.status !== "string") {
+        throw new Error("invalid_response");
+      }
+      const allowed = ["verified", "not_found", "unknown"];
+      const status = allowed.includes(data.status) ? data.status : "unknown";
+      setProofStatus(status);
+      setProofSourceUrl(data.source || trimmedUrl);
+      setProofCheckedAt(Date.now());
+      if (status === "unknown" && data.reason) {
+        setProofError("Nie udało się potwierdzić numeru. Spróbuj ponownie później.");
+      }
+    } catch (err) {
+      console.error(err);
+      setProofStatus("unknown");
+      setProofSourceUrl(trimmedUrl);
+      setProofCheckedAt(Date.now());
+      setProofError("Nie udało się zweryfikować numeru. Spróbuj ponownie później.");
+    } finally {
+      setVerifying(false);
+    }
   }
 
   return (
@@ -388,6 +548,65 @@ function ListingForm({ onAdd, ownerId }) {
         <input value={contact} onChange={(e) => setContact(e.target.value)} className="w-full px-3 py-2 rounded-xl border focus:outline-none focus:ring" placeholder="np. ala@domena.pl / 600123123" />
       </Field>
 
+      {type === "sell" && (
+        <>
+          <Field label="Numer startowy (BIB)" required>
+            <input
+              value={bib}
+              onChange={(e) => setBib(e.target.value)}
+              className="w-full px-3 py-2 rounded-xl border focus:outline-none focus:ring"
+              placeholder="np. 1234 lub A12-7"
+              maxLength={12}
+              pattern="[A-Za-z0-9-]{1,12}"
+            />
+          </Field>
+          <Field label="Link do listy startowej (URL)">
+            <div className="flex flex-col sm:flex-row gap-2">
+              <input
+                value={startListUrl}
+                onChange={(e) => setStartListUrl(e.target.value)}
+                className="w-full px-3 py-2 rounded-xl border focus:outline-none focus:ring"
+                placeholder="https://..."
+                type="url"
+                inputMode="url"
+              />
+              <button
+                type="button"
+                onClick={handleVerify}
+                disabled={
+                  verifying ||
+                  !bib.trim() ||
+                  !/^[A-Za-z0-9-]{1,12}$/.test(bib.trim()) ||
+                  !startListUrl.trim()
+                }
+                className={clsx(
+                  "px-4 py-2 rounded-xl border text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed",
+                  verifying
+                    ? "bg-neutral-100 text-gray-500 border-neutral-200"
+                    : "bg-white hover:bg-neutral-50 border-neutral-300"
+                )}
+              >
+                {verifying ? "Sprawdzam…" : "Zweryfikuj numer"}
+              </button>
+            </div>
+            {(proofStatus || proofError || verifying) && (
+              <div className="mt-2 space-y-1 text-sm">
+                {!verifying && proofStatus && (
+                  <ProofStatusBadge status={proofStatus} source={proofSourceUrl} />
+                )}
+                {proofCheckedAt && proofStatus && !verifying && (
+                  <div className="text-xs text-gray-500">
+                    Sprawdzono: {new Date(proofCheckedAt).toLocaleString("pl-PL")}
+                  </div>
+                )}
+                {verifying && <div className="text-xs text-gray-500">Trwa sprawdzanie…</div>}
+                {proofError && <div className="text-xs text-rose-600">{proofError}</div>}
+              </div>
+            )}
+          </Field>
+        </>
+      )}
+
       <Field label="Opis">
         <textarea value={description} onChange={(e) => setDescription(e.target.value)} className="w-full px-3 py-2 rounded-xl border focus:outline-none focus:ring" rows={3} placeholder="Szczegóły: rozmiar koszulki, możliwość oficjalnego przepisania, itp." />
       </Field>
@@ -413,6 +632,8 @@ function ListingCard({ listing, onDelete, onOpen, onMessage, currentUserId }) {
   const distanceLabel = listing.distance || inferDistance(listing.raceName) || "—";
   const ownerId = getListingOwnerId(listing);
   const canMessage = !!ownerId && ownerId !== currentUserId;
+  const proofStatus = listing.proof_status || "none";
+  const showProofBadge = proofStatus !== "";
   return (
     <div
       id={listing.id}
@@ -449,6 +670,21 @@ function ListingCard({ listing, onDelete, onOpen, onMessage, currentUserId }) {
           <span>{distanceLabel}</span>
         </div>
       </div>
+      {listing.bib && (
+        <div className="mb-3 space-y-1">
+          <div className="text-sm text-gray-700">
+            <span className="text-gray-500">Numer startowy:</span>{" "}
+            <span className="font-mono tracking-widest">{maskBib(listing.bib)}</span>
+          </div>
+          {showProofBadge && (
+            <ProofStatusBadge
+              status={proofStatus}
+              source={listing.proof_source_url}
+              stopClick={(e) => e.stopPropagation()}
+            />
+          )}
+        </div>
+      )}
       {listing.description && (
         <p className="text-sm text-gray-800 mb-3">{listing.description}</p>
       )}
@@ -497,6 +733,7 @@ function DetailModal({ listing, onClose, onMessage, currentUserId }) {
   const isSell = listing.type === "sell";
   const ownerId = getListingOwnerId(listing);
   const canMessage = !!ownerId && ownerId !== currentUserId;
+  const proofStatus = listing.proof_status || "none";
   return (
     <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center" onClick={onClose}>
       <div className="bg-white rounded-2xl w-[min(92vw,700px)] p-5 shadow-xl" onClick={(e) => e.stopPropagation()}>
@@ -537,6 +774,20 @@ function DetailModal({ listing, onClose, onMessage, currentUserId }) {
             <div>{new Date(listing.createdAt).toLocaleString("pl-PL")}</div>
           </div>
         </div>
+        {listing.bib && (
+          <div className="mb-4 space-y-1">
+            <div className="text-sm text-gray-500">Numer startowy (BIB)</div>
+            <div className="flex flex-wrap items-center gap-2 text-sm">
+              <span className="font-mono text-base tracking-widest">{listing.bib}</span>
+              <ProofStatusBadge status={proofStatus} source={listing.proof_source_url} />
+            </div>
+            {listing.proof_checked_at && (
+              <div className="text-xs text-gray-500">
+                Sprawdzono: {new Date(listing.proof_checked_at).toLocaleString("pl-PL")}
+              </div>
+            )}
+          </div>
+        )}
         {listing.description && <p className="text-sm text-gray-800 mb-4">{listing.description}</p>}
         <div className="border-t pt-3">
           <div className="text-sm text-gray-500 mb-1">Kontakt</div>
