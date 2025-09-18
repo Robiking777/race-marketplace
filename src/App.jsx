@@ -19,6 +19,9 @@ const DISTANCES = /** @type {const} */ (["5 km", "10 km", "Półmaraton", "Marat
  * @property {string} contact
  * @property {string} [description]
  * @property {Distance} [distance]
+ * @property {number} [transferFee]
+ * @property {string} [transferFeeCurrency]
+ * @property {string} [transferDeadline]
  * @property {number} createdAt // epoch ms
  * @property {string} [ownerId]
  * @property {string} [owner_id]
@@ -56,18 +59,30 @@ function saveListings(listings) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(listings));
 }
 
-function toPLN(n) {
+function toCurrency(amount, currency = "PLN") {
+  const value = typeof amount === "number" ? amount : Number(amount ?? 0);
   try {
-    return new Intl.NumberFormat("pl-PL", { style: "currency", currency: "PLN" }).format(n ?? 0);
+    return new Intl.NumberFormat("pl-PL", { style: "currency", currency }).format(value);
   } catch {
-    return `${n} PLN`;
+    return `${value} ${currency}`;
   }
+}
+
+function toPLN(n) {
+  return toCurrency(n, "PLN");
 }
 
 const NBHYPHEN = "\u2011"; // nierozdzielający łącznik
 function noWrapDate(s) {
   if (!s) return "—";
   return String(s).replace(/-/g, NBHYPHEN);
+}
+
+function todayISODate() {
+  const now = new Date();
+  const offsetMinutes = now.getTimezoneOffset();
+  const local = new Date(now.getTime() - offsetMinutes * 60_000);
+  return local.toISOString().slice(0, 10);
 }
 
 function clsx(...args) {
@@ -107,11 +122,20 @@ function getListingOwnerId(listing) {
 function migrateListings(listings) {
   let changed = false;
   const migrated = listings.map((l) => {
-    if (l.distance) return l;
-    const inferred = inferDistance(l.raceName || "");
-    if (inferred) {
+    /** @type {Record<string, any>} */
+    const updates = {};
+    if (!l.distance) {
+      const inferred = inferDistance(l.raceName || "");
+      if (inferred) {
+        updates.distance = inferred;
+      }
+    }
+    if (l.transferFee != null && l.transferFeeCurrency == null) {
+      updates.transferFeeCurrency = "PLN";
+    }
+    if (Object.keys(updates).length > 0) {
       changed = true;
-      return { ...l, distance: inferred };
+      return { ...l, ...updates };
     }
     return l;
   });
@@ -133,6 +157,9 @@ function demoSeed() {
       contact: "ania@example.com",
       description: "Pakiet z możliwością oficjalnego przepisania.",
       distance: "Półmaraton",
+      transferFee: 60,
+      transferFeeCurrency: "PLN",
+      transferDeadline: "2025-09-20",
       createdAt: now - 1000 * 60 * 60 * 6,
     },
     {
@@ -157,6 +184,9 @@ function demoSeed() {
       contact: "ola@example.com",
       description: "Sprzedam, odbiór elektroniczny.",
       distance: "10 km",
+      transferFee: 25,
+      transferFeeCurrency: "EUR",
+      transferDeadline: "2025-11-01",
       createdAt: now - 1000 * 60 * 60 * 48,
     },
     {
@@ -190,6 +220,9 @@ function demoSeed() {
       price: 110,
       contact: "ewa@example.com",
       description: "Pakiet wraz z koszulką rozmiar S, odbiór na miejscu.",
+      transferFee: 0,
+      transferFeeCurrency: "PLN",
+      transferDeadline: "2025-08-25",
       createdAt: now - 1000 * 60 * 60 * 120,
     },
     {
@@ -285,6 +318,9 @@ function ListingForm({ onAdd, ownerId }) {
   const [location, setLocation] = useState("");
   const [distance, setDistance] = useState("");
   const [price, setPrice] = useState("");
+  const [transferFee, setTransferFee] = useState("");
+  const [transferFeeCurrency, setTransferFeeCurrency] = useState("PLN");
+  const [transferDeadline, setTransferDeadline] = useState("");
   const [contact, setContact] = useState("");
   const [description, setDescription] = useState("");
   const [agree, setAgree] = useState(false);
@@ -296,6 +332,9 @@ function ListingForm({ onAdd, ownerId }) {
     setLocation("");
     setDistance("");
     setPrice("");
+    setTransferFee("");
+    setTransferFeeCurrency("PLN");
+    setTransferDeadline("");
     setContact("");
     setDescription("");
     setAgree(false);
@@ -305,6 +344,11 @@ function ListingForm({ onAdd, ownerId }) {
     if (!raceName.trim()) return "Podaj nazwę biegu.";
     if (!distance) return "Wybierz dystans biegu.";
     if (!price || isNaN(Number(price)) || Number(price) <= 0) return "Podaj poprawną kwotę.";
+    if (
+      transferFee !== "" &&
+      (Number.isNaN(Number(transferFee)) || Number(transferFee) < 0)
+    )
+      return "Podaj poprawną opłatę za przerejestrowanie (nieujemną).";
     if (!contact.trim()) return "Podaj kontakt (e-mail/telefon).";
     if (!agree) return "Musisz zaakceptować regulamin i zasady transferu pakietu.";
     return "";
@@ -318,6 +362,8 @@ function ListingForm({ onAdd, ownerId }) {
       setTimeout(() => setMsg(""), 2500);
       return;
     }
+    const feeValue = transferFee === "" ? undefined : Number(transferFee);
+    const deadlineValue = transferDeadline || undefined;
     /** @type {Listing} */
     const l = {
       id: cryptoRandom(),
@@ -330,6 +376,9 @@ function ListingForm({ onAdd, ownerId }) {
       contact: contact.trim(),
       description: description?.trim() || undefined,
       createdAt: Date.now(),
+      transferFeeCurrency: transferFeeCurrency || "PLN",
+      ...(feeValue !== undefined ? { transferFee: feeValue } : {}),
+      ...(deadlineValue ? { transferDeadline: deadlineValue } : {}),
       ...(ownerId ? { ownerId } : {}),
     };
     onAdd(l);
@@ -353,9 +402,17 @@ function ListingForm({ onAdd, ownerId }) {
         <input value={raceName} onChange={(e) => setRaceName(e.target.value)} className="w-full px-3 py-2 rounded-xl border focus:outline-none focus:ring" placeholder="np. Półmaraton Warszawski" />
       </Field>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
         <Field label="Data wydarzenia">
           <input type="date" value={eventDate} onChange={(e) => setEventDate(e.target.value)} className="w-full px-3 py-2 rounded-xl border focus:outline-none focus:ring" />
+        </Field>
+        <Field label="Zmiana możliwa do">
+          <input
+            type="date"
+            value={transferDeadline}
+            onChange={(e) => setTransferDeadline(e.target.value)}
+            className="w-full px-3 py-2 rounded-xl border focus:outline-none focus:ring whitespace-nowrap"
+          />
         </Field>
         <Field label="Lokalizacja">
           <input value={location} onChange={(e) => setLocation(e.target.value)} className="w-full px-3 py-2 rounded-xl border focus:outline-none focus:ring" placeholder="np. Warszawa" />
@@ -382,6 +439,28 @@ function ListingForm({ onAdd, ownerId }) {
 
       <Field label={type === "sell" ? "Cena (PLN)" : "Budżet / proponowana kwota (PLN)"} required>
         <input inputMode="decimal" value={price} onChange={(e) => setPrice(e.target.value.replace(",", "."))} className="w-full px-3 py-2 rounded-xl border focus:outline-none focus:ring" placeholder="np. 199" />
+      </Field>
+
+      <Field label="Opłata za przerejestrowanie">
+        <div className="flex items-center gap-2">
+          <input
+            type="number"
+            min="0"
+            step="1"
+            value={transferFee}
+            onChange={(e) => setTransferFee(e.target.value)}
+            className="w-full px-3 py-2 rounded-xl border focus:outline-none focus:ring"
+            placeholder="np. 50"
+          />
+          <select
+            value={transferFeeCurrency}
+            onChange={(e) => setTransferFeeCurrency(e.target.value)}
+            className="px-3 py-2 rounded-xl border focus:outline-none focus:ring bg-white min-w-[5rem]"
+          >
+            <option value="PLN">PLN</option>
+            <option value="EUR">EUR</option>
+          </select>
+        </div>
       </Field>
 
       <Field label="Kontakt (e-mail lub telefon)" required>
@@ -411,6 +490,16 @@ function ListingForm({ onAdd, ownerId }) {
 function ListingCard({ listing, onDelete, onOpen, onMessage, currentUserId }) {
   const isSell = listing.type === "sell";
   const distanceLabel = listing.distance || inferDistance(listing.raceName) || "—";
+  const feeRaw = listing.transferFee;
+  const feeValue =
+    typeof feeRaw === "number"
+      ? feeRaw
+      : typeof feeRaw === "string" && feeRaw.trim() !== ""
+      ? Number(feeRaw)
+      : undefined;
+  const showTransferFee = typeof feeValue === "number" && !Number.isNaN(feeValue);
+  const feeCurrency = listing.transferFeeCurrency || "PLN";
+  const deadline = typeof listing.transferDeadline === "string" ? listing.transferDeadline : undefined;
   const ownerId = getListingOwnerId(listing);
   const canMessage = !!ownerId && ownerId !== currentUserId;
   return (
@@ -433,7 +522,7 @@ function ListingCard({ listing, onDelete, onOpen, onMessage, currentUserId }) {
           <div className="font-semibold">{toPLN(listing.price)}</div>
         </div>
       </div>
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-sm text-gray-600 mb-2">
+      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-2 text-sm text-gray-600 mb-2">
         <div>
           <span className="block text-gray-500">Data</span>
           <span className="whitespace-nowrap tabular-nums">
@@ -448,6 +537,18 @@ function ListingCard({ listing, onDelete, onOpen, onMessage, currentUserId }) {
           <span className="block text-gray-500">Dystans</span>
           <span>{distanceLabel}</span>
         </div>
+        {showTransferFee && (
+          <div>
+            <span className="block text-gray-500">Opłata za przerejestrowanie</span>
+            <span>{toCurrency(feeValue, feeCurrency)}</span>
+          </div>
+        )}
+        {deadline && (
+          <div>
+            <span className="block text-gray-500">Zmiana możliwa do</span>
+            <span className="whitespace-nowrap tabular-nums">{noWrapDate(deadline)}</span>
+          </div>
+        )}
       </div>
       {listing.description && (
         <p className="text-sm text-gray-800 mb-3">{listing.description}</p>
@@ -495,6 +596,16 @@ function ListingCard({ listing, onDelete, onOpen, onMessage, currentUserId }) {
 function DetailModal({ listing, onClose, onMessage, currentUserId }) {
   if (!listing) return null;
   const isSell = listing.type === "sell";
+  const feeRaw = listing.transferFee;
+  const feeValue =
+    typeof feeRaw === "number"
+      ? feeRaw
+      : typeof feeRaw === "string" && feeRaw.trim() !== ""
+      ? Number(feeRaw)
+      : undefined;
+  const showTransferFee = typeof feeValue === "number" && !Number.isNaN(feeValue);
+  const feeCurrency = listing.transferFeeCurrency || "PLN";
+  const deadline = typeof listing.transferDeadline === "string" ? listing.transferDeadline : undefined;
   const ownerId = getListingOwnerId(listing);
   const canMessage = !!ownerId && ownerId !== currentUserId;
   return (
@@ -515,7 +626,7 @@ function DetailModal({ listing, onClose, onMessage, currentUserId }) {
           {!isSell && <div className="text-xs text-gray-500 leading-tight">Proponowana cena zakupu</div>}
           <div className="text-2xl font-semibold">{toPLN(listing.price)}</div>
         </div>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm text-gray-700 mb-3">
+        <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-3 text-sm text-gray-700 mb-3">
           <div>
             <div className="text-gray-500">Data</div>
             <div className="whitespace-nowrap tabular-nums">
@@ -530,6 +641,18 @@ function DetailModal({ listing, onClose, onMessage, currentUserId }) {
             <div>
               <div className="text-gray-500">Dystans</div>
               <div>{listing.distance}</div>
+            </div>
+          )}
+          {showTransferFee && (
+            <div>
+              <div className="text-gray-500">Opłata za przerejestrowanie</div>
+              <div>{toCurrency(feeValue, feeCurrency)}</div>
+            </div>
+          )}
+          {deadline && (
+            <div>
+              <div className="text-gray-500">Zmiana możliwa do</div>
+              <div className="whitespace-nowrap tabular-nums">{noWrapDate(deadline)}</div>
             </div>
           )}
           <div>
@@ -792,6 +915,7 @@ export default function App() {
   const [typeFilter, setTypeFilter] = useState(/** @type {"all"|ListingType} */("all"));
   const [distanceFilter, setDistanceFilter] = useState(/** @type {"all" | Distance} */("all"));
   const [sort, setSort] = useState("newest");
+  const [onlyTransferPossible, setOnlyTransferPossible] = useState(false);
   const [selected, setSelected] = useState/** @type {(Listing|null)} */(null);
   const [session, setSession] = useState(null);
   const [authOpen, setAuthOpen] = useState(false);
@@ -1065,6 +1189,7 @@ export default function App() {
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
+    const today = todayISODate();
     let arr = listings.filter((l) => {
       const okType = typeFilter === "all" ? true : l.type === typeFilter;
       const okQuery = !q ||
@@ -1072,7 +1197,11 @@ export default function App() {
         (l.location || "").toLowerCase().includes(q) ||
         (l.description || "").toLowerCase().includes(q);
       const okDistance = distanceFilter === "all" || (l.distance || inferDistance(l.raceName)) === distanceFilter;
-      return okType && okQuery && okDistance;
+      const deadline = typeof l.transferDeadline === "string" ? l.transferDeadline : undefined;
+      const okTransfer =
+        !onlyTransferPossible ||
+        (deadline && deadline >= today);
+      return okType && okQuery && okDistance && okTransfer;
     });
 
     if (sort === "newest") arr = arr.sort((a, b) => b.createdAt - a.createdAt);
@@ -1080,7 +1209,7 @@ export default function App() {
     if (sort === "priceDesc") arr = arr.sort((a, b) => b.price - a.price);
 
     return arr;
-  }, [listings, query, typeFilter, distanceFilter, sort]);
+  }, [listings, query, typeFilter, distanceFilter, sort, onlyTransferPossible]);
 
   function addListing(l) {
     setListings((prev) => [l, ...prev]);
@@ -1092,7 +1221,20 @@ export default function App() {
   }
 
   function exportCSV() {
-    const headers = ["id","typ","bieg","data","lokalizacja","cena","kontakt","opis","dodano"];
+    const headers = [
+      "id",
+      "typ",
+      "bieg",
+      "data",
+      "lokalizacja",
+      "cena",
+      "oplata_przerejestrowanie",
+      "waluta",
+      "zmiana_mozliwa_do",
+      "kontakt",
+      "opis",
+      "dodano"
+    ];
     const rows = listings.map((l) => [
       l.id,
       l.type,
@@ -1100,6 +1242,9 @@ export default function App() {
       l.eventDate || "",
       l.location || "",
       l.price,
+      l.transferFee ?? "",
+      l.transferFeeCurrency || "PLN",
+      l.transferDeadline || "",
       l.contact,
       (l.description || "").replace(/\n/g, " "),
       new Date(l.createdAt).toISOString()
@@ -1230,6 +1375,15 @@ export default function App() {
                 <option value="priceAsc">Cena rosnąco</option>
                 <option value="priceDesc">Cena malejąco</option>
               </select>
+              <label className="ml-1 flex items-center gap-2 text-sm text-gray-600">
+                <input
+                  type="checkbox"
+                  checked={onlyTransferPossible}
+                  onChange={(e) => setOnlyTransferPossible(e.target.checked)}
+                  className="h-4 w-4 rounded border-gray-300"
+                />
+                Tylko z możliwością zmiany
+              </label>
             </div>
             {filtered.length === 0 ? (
               <div className="text-sm text-gray-600">Brak ogłoszeń dla wybranych filtrów.</div>
