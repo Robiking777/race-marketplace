@@ -19,7 +19,21 @@ const DISTANCES = /** @type {const} */ (["5 km", "10 km", "Półmaraton", "Marat
  * @property {string} contact
  * @property {string} [description]
  * @property {Distance} [distance]
+ * @property {number} [edition_id]
+ * @property {string} [editionEventName]
+ * @property {number} [editionYear]
  * @property {number} createdAt // epoch ms
+ */
+
+/**
+ * @typedef {Object} EditionSearchResult
+ * @property {number} edition_id
+ * @property {string} event_name
+ * @property {string | null} city
+ * @property {string | null} country_code
+ * @property {number | null} year
+ * @property {string | null} start_date
+ * @property {string[] | null} distances
  */
 
 // ----------------------- Pomocnicze funkcje ----------------------
@@ -261,6 +275,80 @@ function ListingForm({ onAdd }) {
   const [description, setDescription] = useState("");
   const [agree, setAgree] = useState(false);
   const [msg, setMsg] = useState("");
+  const [selectedEdition, setSelectedEdition] = useState(/** @type {(EditionSearchResult | null)} */(null));
+  const [searchTerm, setSearchTerm] = useState("");
+  const [suggestions, setSuggestions] = useState(/** @type {EditionSearchResult[]} */([]));
+  const [isSearching, setIsSearching] = useState(false);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [searchError, setSearchError] = useState("");
+
+  useEffect(() => {
+    const q = searchTerm.trim();
+    if (q.length < 2) {
+      setSuggestions([]);
+      setIsSearching(false);
+      setSearchError("");
+      return;
+    }
+
+    let ignore = false;
+    setIsSearching(true);
+    setSearchError("");
+    const handler = setTimeout(async () => {
+      try {
+        const { data, error } = await supabase
+          .from("event_editions_search")
+          .select("edition_id,event_name,city,country_code,year,start_date,distances")
+          .ilike("event_name", `%${q}%`)
+          .order("year", { ascending: false })
+          .limit(20);
+        if (ignore) return;
+        if (error) {
+          console.error(error);
+          setSearchError("Nie udało się pobrać propozycji.");
+          setSuggestions([]);
+        } else {
+          setSuggestions(data || []);
+        }
+      } catch (err) {
+        if (ignore) return;
+        console.error(err);
+        setSearchError("Nie udało się pobrać propozycji.");
+        setSuggestions([]);
+      } finally {
+        if (!ignore) {
+          setIsSearching(false);
+        }
+      }
+    }, 250);
+
+    return () => {
+      ignore = true;
+      clearTimeout(handler);
+    };
+  }, [searchTerm]);
+
+  function handleSelectEdition(item) {
+    setSelectedEdition(item);
+    setRaceName(item.event_name || "");
+    setSearchTerm("");
+    setSuggestions([]);
+    setShowSuggestions(false);
+    setEventDate(item.start_date || "");
+    if (Array.isArray(item.distances) && item.distances.length === 1) {
+      const first = item.distances[0] || "";
+      if (DISTANCES.includes(first)) {
+        setDistance(first);
+      }
+    }
+  }
+
+  function formatEditionMeta(item) {
+    const locationParts = [item.city, item.country_code].filter(Boolean);
+    const locationLabel = locationParts.length ? `(${locationParts.join(", ")})` : "";
+    const yearLabel = item.year ? `— ${item.year}` : "";
+    return [locationLabel, yearLabel].filter(Boolean).join(" ");
+  }
 
   function reset() {
     setRaceName("");
@@ -271,6 +359,11 @@ function ListingForm({ onAdd }) {
     setContact("");
     setDescription("");
     setAgree(false);
+    setSelectedEdition(null);
+    setSearchTerm("");
+    setSuggestions([]);
+    setShowSuggestions(false);
+    setSearchError("");
   }
 
   function validate() {
@@ -290,6 +383,7 @@ function ListingForm({ onAdd }) {
       setTimeout(() => setMsg(""), 2500);
       return;
     }
+    const selected = selectedEdition;
     /** @type {Listing} */
     const l = {
       id: cryptoRandom(),
@@ -303,11 +397,18 @@ function ListingForm({ onAdd }) {
       description: description?.trim() || undefined,
       createdAt: Date.now(),
     };
+    if (selected) {
+      l.edition_id = selected.edition_id;
+      l.editionEventName = selected.event_name;
+      l.editionYear = selected.year ?? undefined;
+    }
     onAdd(l);
     reset();
     setMsg("Dodano ogłoszenie ✔");
     setTimeout(() => setMsg(""), 2000);
   }
+
+  const selectedEditionMeta = selectedEdition ? formatEditionMeta(selectedEdition) : "";
 
   return (
     <form onSubmit={handleSubmit} className="space-y-3">
@@ -321,7 +422,77 @@ function ListingForm({ onAdd }) {
       </div>
 
       <Field label="Nazwa biegu" required>
-        <input value={raceName} onChange={(e) => setRaceName(e.target.value)} className="w-full px-3 py-2 rounded-xl border focus:outline-none focus:ring" placeholder="np. Półmaraton Warszawski" />
+        <div className="relative">
+          <input
+            value={raceName}
+            onChange={(e) => {
+              const value = e.target.value;
+              setRaceName(value);
+              setSearchTerm(value);
+              setShowSuggestions(true);
+              setSearchError("");
+              if (selectedEdition && value !== selectedEdition.event_name) {
+                setSelectedEdition(null);
+              }
+            }}
+            onFocus={() => {
+              setShowSuggestions(true);
+              if (!searchTerm && raceName.trim().length >= 2) {
+                setSearchTerm(raceName);
+              }
+            }}
+            onBlur={() => {
+              setTimeout(() => setShowSuggestions(false), 150);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") {
+                setShowSuggestions(false);
+              }
+            }}
+            className="w-full px-3 py-2 rounded-xl border focus:outline-none focus:ring"
+            placeholder="np. Półmaraton Warszawski"
+            autoComplete="off"
+          />
+          {showSuggestions && (
+            <div className="absolute left-0 right-0 mt-1 rounded-xl border bg-white shadow-lg z-20">
+              <div className="max-h-60 overflow-auto py-1">
+                {searchTerm.trim().length < 2 ? (
+                  <div className="px-3 py-2 text-sm text-gray-500">Wpisz min. 2 znaki, aby wyszukać.</div>
+                ) : (
+                  <>
+                    {isSearching && <div className="px-3 py-2 text-sm text-gray-500">Wyszukiwanie…</div>}
+                    {searchError && !isSearching && (
+                      <div className="px-3 py-2 text-sm text-rose-600">{searchError}</div>
+                    )}
+                    {!isSearching && !searchError && suggestions.length === 0 && (
+                      <div className="px-3 py-2 text-sm text-gray-500">Brak wyników.</div>
+                    )}
+                    {suggestions.map((item) => (
+                      <button
+                        key={item.edition_id}
+                        type="button"
+                        className="w-full text-left px-3 py-2 text-sm hover:bg-neutral-100"
+                        onMouseDown={(e) => {
+                          e.preventDefault();
+                          handleSelectEdition(item);
+                        }}
+                      >
+                        <div className="font-medium text-neutral-900">{item.event_name}</div>
+                        <div className="text-xs text-gray-500">{formatEditionMeta(item) || ""}</div>
+                      </button>
+                    ))}
+                  </>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+        {selectedEdition && (
+          <div className="mt-1 text-xs text-gray-500">
+            Wybrano: {selectedEdition.event_name}
+            {selectedEditionMeta ? <span> {selectedEditionMeta}</span> : null}
+          </div>
+        )}
       </Field>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -391,9 +562,14 @@ function ListingCard({ listing, onDelete, onOpen }) {
       onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && onOpen(listing)}
     >
       <div className="flex items-center justify-between gap-3 mb-2">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           <Badge color={isSell ? "bg-emerald-100 text-emerald-800" : "bg-sky-100 text-sky-800"}>{isSell ? "SPRZEDAM" : "KUPIĘ"}</Badge>
           <h3 className="font-semibold text-lg">{listing.raceName}</h3>
+          {listing.edition_id && (
+            <span className="text-xs text-gray-500">
+              {(listing.editionEventName || listing.raceName) + (listing.editionYear ? ` — ${listing.editionYear}` : "")}
+            </span>
+          )}
         </div>
         <div className="text-right">
           {!isSell && (
