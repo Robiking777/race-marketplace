@@ -22,6 +22,10 @@ const DISTANCES = /** @type {const} */ (["5 km", "10 km", "Półmaraton", "Marat
  * @property {number} [edition_id]
  * @property {string} [editionEventName]
  * @property {number} [editionYear]
+ * @property {string} [bib]
+ * @property {"none" | "verified" | "not_found" | "error"} [proof_status]
+ * @property {string} [proof_source_url]
+ * @property {string} [proof_checked_at]
  * @property {number} createdAt // epoch ms
  * @property {string} [ownerId]
  * @property {string} [owner_id]
@@ -86,6 +90,29 @@ function noWrapDate(s) {
 
 function clsx(...args) {
   return args.filter(Boolean).join(" ");
+}
+
+function maskBib(value = "") {
+  const input = String(value).trim();
+  if (!input) return "";
+  if (input.length <= 3) {
+    return "•".repeat(input.length || 3);
+  }
+  const visible = input.slice(-3);
+  return `${"•".repeat(Math.max(3, input.length - 3))}${visible}`;
+}
+
+function proofStatusBadgeMeta(status = "") {
+  switch (status) {
+    case "verified":
+      return { label: "Zweryfikowany", color: "bg-emerald-100 text-emerald-800" };
+    case "not_found":
+      return { label: "Nie znaleziono", color: "bg-amber-100 text-amber-800" };
+    case "error":
+      return { label: "Błąd weryfikacji", color: "bg-rose-100 text-rose-700" };
+    default:
+      return { label: "Niezweryfikowany", color: "bg-neutral-100 text-gray-600" };
+  }
 }
 
 /**
@@ -309,6 +336,13 @@ function ListingForm({ onAdd, ownerId }) {
   const [isSearching, setIsSearching] = useState(false);
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [searchError, setSearchError] = useState("");
+  const [bib, setBib] = useState("");
+  const [startListUrl, setStartListUrl] = useState("");
+  const [proofStatus, setProofStatus] = useState("");
+  const [proofSourceUrl, setProofSourceUrl] = useState("");
+  const [proofCheckedAt, setProofCheckedAt] = useState(/** @type {string | null} */(null));
+  const [proofError, setProofError] = useState("");
+  const [verifying, setVerifying] = useState(false);
 
   useEffect(() => {
     const q = searchTerm.trim();
@@ -356,6 +390,26 @@ function ListingForm({ onAdd, ownerId }) {
     };
   }, [searchTerm]);
 
+  useEffect(() => {
+    setProofStatus("");
+    setProofSourceUrl("");
+    setProofCheckedAt(null);
+    setProofError("");
+    setVerifying(false);
+  }, [bib, startListUrl]);
+
+  useEffect(() => {
+    if (type === "buy") {
+      setBib("");
+      setStartListUrl("");
+      setProofStatus("");
+      setProofSourceUrl("");
+      setProofCheckedAt(null);
+      setProofError("");
+      setVerifying(false);
+    }
+  }, [type]);
+
   function handleSelectEdition(item) {
     setSelectedEdition(item);
     setRaceName(item.event_name || "");
@@ -392,6 +446,13 @@ function ListingForm({ onAdd, ownerId }) {
     setSuggestions([]);
     setShowSuggestions(false);
     setSearchError("");
+    setBib("");
+    setStartListUrl("");
+    setProofStatus("");
+    setProofSourceUrl("");
+    setProofCheckedAt(null);
+    setProofError("");
+    setVerifying(false);
   }
 
   function validate() {
@@ -401,6 +462,63 @@ function ListingForm({ onAdd, ownerId }) {
     if (!contact.trim()) return "Podaj kontakt (e-mail/telefon).";
     if (!agree) return "Musisz zaakceptować regulamin i zasady transferu pakietu.";
     return "";
+  }
+
+  async function handleVerify() {
+    if (!bib.trim()) {
+      setProofError("Podaj numer BIB do weryfikacji.");
+      return;
+    }
+    if (!startListUrl.trim()) {
+      setProofError("Podaj link do listy startowej.");
+      return;
+    }
+
+    setVerifying(true);
+    setProofError("");
+
+    try {
+      const response = await fetch("/api/verify-bib-url", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ bib: bib.trim(), url: startListUrl.trim() }),
+      });
+
+      /** @type {{ status?: string, sourceUrl?: string, checkedAt?: string, message?: string, error?: string }} */
+      let payload = {};
+      try {
+        payload = await response.json();
+      } catch (err) {
+        console.error(err);
+      }
+
+      if (!response.ok) {
+        setProofStatus("error");
+        setProofSourceUrl(payload?.sourceUrl || startListUrl.trim());
+        setProofCheckedAt(payload?.checkedAt || new Date().toISOString());
+        setProofError(payload?.error || payload?.message || "Nie udało się zweryfikować numeru.");
+        return;
+      }
+
+      const nextStatus = payload.status || "not_found";
+      setProofStatus(nextStatus);
+      setProofSourceUrl(payload?.sourceUrl || startListUrl.trim());
+      setProofCheckedAt(payload?.checkedAt || new Date().toISOString());
+
+      if (nextStatus === "verified") {
+        setProofError(payload?.message || "");
+      } else {
+        setProofError(payload?.message || payload?.error || "Numeru nie znaleziono na liście startowej.");
+      }
+    } catch (err) {
+      console.error(err);
+      setProofStatus("error");
+      setProofSourceUrl(startListUrl.trim());
+      setProofCheckedAt(new Date().toISOString());
+      setProofError("Nie udało się zweryfikować numeru.");
+    } finally {
+      setVerifying(false);
+    }
   }
 
   function handleSubmit(e) {
@@ -431,6 +549,21 @@ function ListingForm({ onAdd, ownerId }) {
       l.editionEventName = selected.event_name;
       l.editionYear = selected.year ?? undefined;
     }
+    if (type === "sell") {
+      const trimmedBib = bib.trim();
+      const normalizedProofStatus = proofStatus || (trimmedBib ? "none" : "");
+      const sourceUrl = proofSourceUrl || startListUrl.trim();
+      if (trimmedBib) {
+        l.bib = trimmedBib;
+        l.proof_status = /** @type {Listing["proof_status"]} */ (normalizedProofStatus || "none");
+        if (sourceUrl) l.proof_source_url = sourceUrl;
+        if (proofCheckedAt) l.proof_checked_at = proofCheckedAt;
+      } else if (proofStatus) {
+        l.proof_status = /** @type {Listing["proof_status"]} */ (proofStatus);
+        if (sourceUrl) l.proof_source_url = sourceUrl;
+        if (proofCheckedAt) l.proof_checked_at = proofCheckedAt;
+      }
+    }
     onAdd(l);
     reset();
     setMsg("Dodano ogłoszenie ✔");
@@ -438,6 +571,15 @@ function ListingForm({ onAdd, ownerId }) {
   }
 
   const selectedEditionMeta = selectedEdition ? formatEditionMeta(selectedEdition) : "";
+  const normalizedProofStatus = proofStatus || (bib ? "none" : "");
+  const proofBadge = proofStatusBadgeMeta(normalizedProofStatus || "none");
+  let proofCheckedLabel = "";
+  if (proofCheckedAt) {
+    const parsed = new Date(proofCheckedAt);
+    if (!Number.isNaN(parsed.getTime())) {
+      proofCheckedLabel = parsed.toLocaleString("pl-PL");
+    }
+  }
 
   return (
     <form onSubmit={handleSubmit} className="space-y-3">
@@ -555,6 +697,61 @@ function ListingForm({ onAdd, ownerId }) {
         <input inputMode="decimal" value={price} onChange={(e) => setPrice(e.target.value.replace(",", "."))} className="w-full px-3 py-2 rounded-xl border focus:outline-none focus:ring" placeholder="np. 199" />
       </Field>
 
+      {type === "sell" && (
+        <div className="space-y-2">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <Field label="Numer BIB">
+              <input
+                value={bib}
+                onChange={(e) => setBib(e.target.value)}
+                className="w-full px-3 py-2 rounded-xl border focus:outline-none focus:ring"
+                placeholder="np. 1234"
+              />
+            </Field>
+            <Field label="Link do listy startowej">
+              <input
+                type="url"
+                value={startListUrl}
+                onChange={(e) => setStartListUrl(e.target.value)}
+                className="w-full px-3 py-2 rounded-xl border focus:outline-none focus:ring"
+                placeholder="https://…"
+              />
+            </Field>
+          </div>
+          <div className="flex flex-wrap items-center gap-2 text-sm">
+            <button
+              type="button"
+              onClick={handleVerify}
+              disabled={verifying || !bib.trim() || !startListUrl.trim()}
+              className="px-3 py-1.5 rounded-xl border bg-white hover:bg-neutral-50 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {verifying ? "Sprawdzam…" : "Zweryfikuj numer"}
+            </button>
+            {(bib || proofStatus) && (
+              <Badge color={proofBadge.color}>{proofBadge.label}</Badge>
+            )}
+            {proofCheckedLabel && (
+              <span className="text-xs text-gray-500">Sprawdzono {proofCheckedLabel}</span>
+            )}
+            {proofSourceUrl && normalizedProofStatus === "verified" && (
+              <a
+                href={proofSourceUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="text-xs text-sky-600 underline"
+              >
+                Zobacz listę
+              </a>
+            )}
+          </div>
+          {proofError && (
+            <div className={clsx("text-xs", normalizedProofStatus === "verified" ? "text-emerald-600" : "text-rose-600")}>
+              {proofError}
+            </div>
+          )}
+        </div>
+      )}
+
       <Field label="Kontakt (e-mail lub telefon)" required>
         <input value={contact} onChange={(e) => setContact(e.target.value)} className="w-full px-3 py-2 rounded-xl border focus:outline-none focus:ring" placeholder="np. ala@domena.pl / 600123123" />
       </Field>
@@ -584,6 +781,17 @@ function ListingCard({ listing, onDelete, onOpen, onMessage, currentUserId }) {
   const distanceLabel = listing.distance || inferDistance(listing.raceName) || "—";
   const ownerId = getListingOwnerId(listing);
   const canMessage = !!ownerId && ownerId !== currentUserId;
+  const listingProofStatus = listing.proof_status || (listing.bib ? "none" : "");
+  const listingProofBadge = proofStatusBadgeMeta(listingProofStatus || "none");
+  const maskedBib = listing.bib ? maskBib(listing.bib) : "";
+  const showProof = isSell && (listing.bib || (listing.proof_status && listing.proof_status !== "none"));
+  let listingProofCheckedLabel = "";
+  if (listing.proof_checked_at) {
+    const parsed = new Date(listing.proof_checked_at);
+    if (!Number.isNaN(parsed.getTime())) {
+      listingProofCheckedLabel = parsed.toLocaleString("pl-PL");
+    }
+  }
   return (
     <div
       id={listing.id}
@@ -625,6 +833,19 @@ function ListingCard({ listing, onDelete, onOpen, onMessage, currentUserId }) {
           <span>{distanceLabel}</span>
         </div>
       </div>
+      {showProof && (
+        <div className="flex flex-wrap items-center gap-2 text-xs text-gray-600 mb-2">
+          {maskedBib && (
+            <span className="text-sm text-gray-800">
+              Numer startowy: <span className="font-semibold">{maskedBib}</span>
+            </span>
+          )}
+          <Badge color={listingProofBadge.color}>{listingProofBadge.label}</Badge>
+          {listingProofCheckedLabel && (
+            <span>Sprawdzono {listingProofCheckedLabel}</span>
+          )}
+        </div>
+      )}
       {listing.description && (
         <p className="text-sm text-gray-800 mb-3">{listing.description}</p>
       )}
@@ -673,6 +894,18 @@ function DetailModal({ listing, onClose, onMessage, currentUserId }) {
   const isSell = listing.type === "sell";
   const ownerId = getListingOwnerId(listing);
   const canMessage = !!ownerId && ownerId !== currentUserId;
+  const listingProofStatus = listing.proof_status || (listing.bib ? "none" : "");
+  const listingProofBadge = proofStatusBadgeMeta(listingProofStatus || "none");
+  const maskedBib = listing.bib ? maskBib(listing.bib) : "";
+  const proofUrl = listing.proof_source_url || "";
+  const showProof = isSell && (listing.bib || (listing.proof_status && listing.proof_status !== "none"));
+  let listingProofCheckedLabel = "";
+  if (listing.proof_checked_at) {
+    const parsed = new Date(listing.proof_checked_at);
+    if (!Number.isNaN(parsed.getTime())) {
+      listingProofCheckedLabel = parsed.toLocaleString("pl-PL");
+    }
+  }
   return (
     <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center" onClick={onClose}>
       <div className="bg-white rounded-2xl w-[min(92vw,700px)] p-5 shadow-xl" onClick={(e) => e.stopPropagation()}>
@@ -713,6 +946,22 @@ function DetailModal({ listing, onClose, onMessage, currentUserId }) {
             <div>{new Date(listing.createdAt).toLocaleString("pl-PL")}</div>
           </div>
         </div>
+        {showProof && (
+          <div className="flex flex-wrap items-center gap-2 text-sm text-gray-700 mb-4">
+            {maskedBib && (
+              <div>
+                Numer startowy: <span className="font-semibold">{maskedBib}</span>
+              </div>
+            )}
+            <Badge color={listingProofBadge.color}>{listingProofBadge.label}</Badge>
+            {listingProofCheckedLabel && <div>Sprawdzono {listingProofCheckedLabel}</div>}
+            {proofUrl && (
+              <a href={proofUrl} target="_blank" rel="noreferrer" className="text-sky-600 underline">
+                Lista startowa
+              </a>
+            )}
+          </div>
+        )}
         {listing.description && <p className="text-sm text-gray-800 mb-4">{listing.description}</p>}
         <div className="border-t pt-3">
           <div className="text-sm text-gray-500 mb-1">Kontakt</div>
