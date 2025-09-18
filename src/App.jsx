@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "./lib/supabase";
 
 // ----------------------------- Typy -----------------------------
@@ -20,6 +20,19 @@ const DISTANCES = /** @type {const} */ (["5 km", "10 km", "Półmaraton", "Marat
  * @property {string} [description]
  * @property {Distance} [distance]
  * @property {number} createdAt // epoch ms
+ * @property {string} [ownerId]
+ * @property {string} [owner_id]
+ * @property {string} [user_id]
+ */
+
+/**
+ * @typedef {Object} ThreadMessage
+ * @property {string} id
+ * @property {string} thread_id
+ * @property {string} sender_id
+ * @property {string} body
+ * @property {string} created_at
+ * @property {string | null} [read_at]
  */
 
 // ----------------------- Pomocnicze funkcje ----------------------
@@ -73,6 +86,21 @@ function inferDistance(raceName = "") {
   if (lower.includes("10")) return "10 km";
   if (lower.includes("5")) return "5 km";
   return undefined;
+}
+
+/**
+ * @param {Listing} listing
+ * @returns {string | null}
+ */
+function getListingOwnerId(listing) {
+  return (
+    listing?.owner_id ||
+    listing?.ownerId ||
+    listing?.user_id ||
+    listing?.userId ||
+    (listing?.user && typeof listing.user === "object" ? listing.user.id : null) ||
+    null
+  );
 }
 
 /** @param {Listing[]} listings */
@@ -248,8 +276,8 @@ function Field({ label, required, children }) {
   );
 }
 
-/** @param {{ onAdd: (l: Listing)=>void }} props */
-function ListingForm({ onAdd }) {
+/** @param {{ onAdd: (l: Listing)=>void, ownerId?: string }} props */
+function ListingForm({ onAdd, ownerId }) {
   /** @type {[ListingType, Function]} */
   const [type, setType] = useState(/** @type {ListingType} */("sell"));
   const [raceName, setRaceName] = useState("");
@@ -302,6 +330,7 @@ function ListingForm({ onAdd }) {
       contact: contact.trim(),
       description: description?.trim() || undefined,
       createdAt: Date.now(),
+      ...(ownerId ? { ownerId } : {}),
     };
     onAdd(l);
     reset();
@@ -378,10 +407,12 @@ function ListingForm({ onAdd }) {
   );
 }
 
-/** @param {{ listing: Listing, onDelete: (id:string)=>void, onOpen: (listing: Listing)=>void }} props */
-function ListingCard({ listing, onDelete, onOpen }) {
+/** @param {{ listing: Listing, onDelete: (id:string)=>void, onOpen: (listing: Listing)=>void, onMessage: (listing: Listing)=>void, currentUserId?: string }} props */
+function ListingCard({ listing, onDelete, onOpen, onMessage, currentUserId }) {
   const isSell = listing.type === "sell";
   const distanceLabel = listing.distance || inferDistance(listing.raceName) || "—";
+  const ownerId = getListingOwnerId(listing);
+  const canMessage = !!ownerId && ownerId !== currentUserId;
   return (
     <div
       id={listing.id}
@@ -424,16 +455,29 @@ function ListingCard({ listing, onDelete, onOpen }) {
       <div className="text-xs text-gray-500 mb-3">
         Dodano: {new Date(listing.createdAt).toLocaleString("pl-PL")}
       </div>
-      <div className="flex items-center justify-between">
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            copyPermalink(listing.id);
-          }}
-          className="text-sm px-3 py-1.5 rounded-lg bg-neutral-100 hover:bg-neutral-200"
-        >
-          Kopiuj link
-        </button>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              copyPermalink(listing.id);
+            }}
+            className="text-sm px-3 py-1.5 rounded-lg bg-neutral-100 hover:bg-neutral-200"
+          >
+            Kopiuj link
+          </button>
+          {canMessage && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                onMessage(listing);
+              }}
+              className="text-sm px-3 py-1.5 rounded-lg bg-neutral-900 text-white hover:opacity-90"
+            >
+              Napisz wiadomość
+            </button>
+          )}
+        </div>
         <button
           onClick={(e) => {
             e.stopPropagation();
@@ -448,9 +492,11 @@ function ListingCard({ listing, onDelete, onOpen }) {
   );
 }
 
-function DetailModal({ listing, onClose }) {
+function DetailModal({ listing, onClose, onMessage, currentUserId }) {
   if (!listing) return null;
   const isSell = listing.type === "sell";
+  const ownerId = getListingOwnerId(listing);
+  const canMessage = !!ownerId && ownerId !== currentUserId;
   return (
     <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center" onClick={onClose}>
       <div className="bg-white rounded-2xl w-[min(92vw,700px)] p-5 shadow-xl" onClick={(e) => e.stopPropagation()}>
@@ -505,6 +551,124 @@ function DetailModal({ listing, onClose }) {
               Kopiuj
             </button>
           </div>
+          {canMessage && (
+            <button
+              className="mt-3 text-sm px-3 py-1.5 rounded-lg bg-neutral-900 text-white hover:opacity-90"
+              onClick={() => {
+                onMessage?.(listing);
+                onClose();
+              }}
+            >
+              Napisz wiadomość
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** @param {{
+ * open: boolean,
+ * onClose: () => void,
+ * listing: Listing | null,
+ * messages: ThreadMessage[],
+ * loading: boolean,
+ * error: string,
+ * onSend: (body: string) => Promise<void>,
+ * sending: boolean,
+ * currentUserId?: string,
+ * threadReady: boolean
+ * }} props */
+function ChatModal({ open, onClose, listing, messages, loading, error, onSend, sending, currentUserId, threadReady }) {
+  const [text, setText] = useState("");
+  const bottomRef = useRef(null);
+
+  useEffect(() => {
+    if (open) {
+      setText("");
+    }
+  }, [open, listing?.id]);
+
+  useEffect(() => {
+    if (!open) return;
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages, open]);
+
+  if (!open || !listing) return null;
+
+  async function handleSubmit(e) {
+    e.preventDefault();
+    const trimmed = text.trim();
+    if (!trimmed || sending) return;
+    try {
+      await onSend(trimmed);
+      setText("");
+    } catch (err) {
+      console.error(err);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center" onClick={onClose}>
+      <div
+        className="bg-white rounded-2xl w-[min(95vw,720px)] h-[min(90vh,640px)] flex flex-col shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="px-5 py-4 border-b flex items-center justify-between gap-3">
+          <div>
+            <div className="text-sm text-gray-500">Ogłoszenie</div>
+            <div className="font-semibold">{listing.raceName}</div>
+          </div>
+          <button className="px-3 py-1.5 rounded-lg bg-neutral-100 hover:bg-neutral-200" onClick={onClose}>
+            Zamknij
+          </button>
+        </div>
+        <div className="flex-1 overflow-y-auto px-5 py-4 space-y-3 bg-neutral-50">
+          {loading ? (
+            <div className="text-sm text-gray-500">Ładuję wiadomości…</div>
+          ) : messages.length === 0 ? (
+            <div className="text-sm text-gray-500">Brak wiadomości — napisz pierwszą.</div>
+          ) : (
+            messages.map((msg) => {
+              const isMine = msg.sender_id === currentUserId;
+              const time = new Date(msg.created_at).toLocaleString("pl-PL", {
+                hour: "2-digit",
+                minute: "2-digit",
+                day: "2-digit",
+                month: "2-digit",
+              });
+              return (
+                <div key={msg.id} className="flex flex-col">
+                  <div className={clsx("max-w-[85%] px-4 py-2 rounded-2xl", isMine ? "self-end bg-neutral-900 text-white" : "self-start bg-white border")}>{msg.body}</div>
+                  <div className={clsx("text-xs text-gray-500 mt-1", isMine ? "self-end" : "self-start")}>{time}</div>
+                </div>
+              );
+            })
+          )}
+          <div ref={bottomRef} />
+        </div>
+        <div className="px-5 py-3 border-t space-y-2 bg-white">
+          {error && <div className="text-sm text-rose-600">{error}</div>}
+          <form onSubmit={handleSubmit} className="space-y-2">
+            <textarea
+              rows={3}
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+              className="w-full px-3 py-2 rounded-xl border focus:outline-none focus:ring"
+              placeholder="Twoja wiadomość…"
+              disabled={sending || loading || !threadReady}
+            />
+            <div className="flex items-center justify-end gap-2">
+              <button
+                type="submit"
+                disabled={sending || !text.trim() || loading || !threadReady}
+                className="px-4 py-2 rounded-xl bg-neutral-900 text-white disabled:opacity-50"
+              >
+                {sending ? "Wysyłam…" : "Wyślij"}
+              </button>
+            </div>
+          </form>
         </div>
       </div>
     </div>
@@ -631,6 +795,52 @@ export default function App() {
   const [selected, setSelected] = useState/** @type {(Listing|null)} */(null);
   const [session, setSession] = useState(null);
   const [authOpen, setAuthOpen] = useState(false);
+  const [chatOpen, setChatOpen] = useState(false);
+  const [chatListing, setChatListing] = useState/** @type {(Listing|null)} */(null);
+  const [chatThreadId, setChatThreadId] = useState(/** @type {string | null} */(null));
+  const [chatMessages, setChatMessages] = useState(/** @type {ThreadMessage[]} */([]));
+  const [chatLoading, setChatLoading] = useState(false);
+  const [chatError, setChatError] = useState("");
+  const [chatSending, setChatSending] = useState(false);
+  const [unreadCount, setUnreadCount] = useState(0);
+  const currentUserId = session?.user?.id || null;
+
+  const refreshUnread = useCallback(async () => {
+    if (!currentUserId) {
+      setUnreadCount(0);
+      return;
+    }
+    const { count, error } = await supabase
+      .from("messages")
+      .select("id", { count: "exact", head: true })
+      .is("read_at", null)
+      .neq("sender_id", currentUserId);
+    if (error) {
+      console.error(error);
+      return;
+    }
+    setUnreadCount(count ?? 0);
+  }, [currentUserId]);
+
+  const markThreadMessagesRead = useCallback(
+    async (threadId) => {
+      if (!currentUserId || !threadId) return;
+      const { error } = await supabase.rpc("mark_thread_messages_read", { thread_id_input: threadId });
+      if (error) {
+        console.error(error);
+        return;
+      }
+      setChatMessages((prev) =>
+        prev.map((msg) =>
+          msg.thread_id === threadId && msg.sender_id !== currentUserId && !msg.read_at
+            ? { ...msg, read_at: new Date().toISOString() }
+            : msg
+        )
+      );
+      refreshUnread();
+    },
+    [currentUserId, refreshUnread]
+  );
 
   useEffect(() => {
     const l = loadListings();
@@ -656,6 +866,202 @@ export default function App() {
     } = supabase.auth.onAuthStateChange((_event, s) => setSession(s));
     return () => subscription.unsubscribe();
   }, []);
+
+  useEffect(() => {
+    if (!currentUserId) {
+      setUnreadCount(0);
+      return;
+    }
+    refreshUnread();
+  }, [currentUserId, refreshUnread]);
+
+  const openChat = useCallback(
+    async (listing) => {
+      if (!session || !currentUserId) {
+        setAuthOpen(true);
+        return;
+      }
+
+      setChatListing(listing);
+      setChatMessages([]);
+      setChatThreadId(null);
+      setChatError("");
+      setChatOpen(true);
+
+      const ownerId = getListingOwnerId(listing);
+      if (!ownerId) {
+        setChatLoading(false);
+        setChatError("Nie znaleziono właściciela ogłoszenia.");
+        return;
+      }
+      if (ownerId === currentUserId) {
+        setChatLoading(false);
+        setChatError("To Twoje ogłoszenie — nie możesz wysłać wiadomości do siebie.");
+        return;
+      }
+
+      setChatLoading(true);
+
+      try {
+        const { data: threadsData, error } = await supabase
+          .from("threads")
+          .select("id, thread_participants ( user_id )")
+          .eq("listing_id", listing.id);
+        if (error) throw error;
+
+        let threadId = null;
+        if (Array.isArray(threadsData)) {
+          for (const thread of threadsData) {
+            const participants = (thread.thread_participants || []).map((p) => p.user_id);
+            if (participants.includes(currentUserId) && participants.includes(ownerId)) {
+              threadId = thread.id;
+              break;
+            }
+          }
+        }
+
+        if (!threadId) {
+          const { data: newThread, error: threadError } = await supabase
+            .from("threads")
+            .insert({ listing_id: listing.id })
+            .select()
+            .single();
+          if (threadError) throw threadError;
+
+          const { error: selfError } = await supabase
+            .from("thread_participants")
+            .insert({ thread_id: newThread.id, user_id: currentUserId });
+          if (selfError && selfError.code !== "23505") throw selfError;
+
+          const { error: otherError } = await supabase
+            .from("thread_participants")
+            .insert({ thread_id: newThread.id, user_id: ownerId });
+          if (otherError && otherError.code !== "23505") throw otherError;
+
+          threadId = newThread.id;
+        }
+
+        setChatThreadId(threadId);
+      } catch (err) {
+        console.error(err);
+        setChatError(err.message || "Nie udało się otworzyć czatu.");
+        setChatThreadId(null);
+        setChatLoading(false);
+      }
+    },
+    [session, currentUserId]
+  );
+
+  const closeChat = useCallback(() => {
+    setChatOpen(false);
+    setChatListing(null);
+    setChatThreadId(null);
+    setChatMessages([]);
+    setChatError("");
+    setChatLoading(false);
+    setChatSending(false);
+  }, []);
+
+  const sendChatMessage = useCallback(
+    async (body) => {
+      if (!chatThreadId || !currentUserId) {
+        throw new Error("Brak aktywnego wątku czatu.");
+      }
+      setChatError("");
+      setChatSending(true);
+      try {
+        const { data, error } = await supabase
+          .from("messages")
+          .insert({ thread_id: chatThreadId, sender_id: currentUserId, body })
+          .select()
+          .single();
+        if (error) throw error;
+        if (data) {
+          setChatMessages((prev) => {
+            if (prev.some((msg) => msg.id === data.id)) return prev;
+            return [...prev, /** @type {ThreadMessage} */ (data)];
+          });
+        }
+      } catch (err) {
+        setChatError(err.message || "Nie udało się wysłać wiadomości.");
+        throw err;
+      } finally {
+        setChatSending(false);
+      }
+    },
+    [chatThreadId, currentUserId]
+  );
+
+  useEffect(() => {
+    if (!currentUserId && chatOpen) {
+      closeChat();
+    }
+  }, [currentUserId, chatOpen, closeChat]);
+
+  useEffect(() => {
+    if (!chatThreadId || !chatOpen) return;
+    let active = true;
+    setChatLoading(true);
+    supabase
+      .from("messages")
+      .select("*")
+      .eq("thread_id", chatThreadId)
+      .order("created_at", { ascending: true })
+      .then(({ data, error }) => {
+        if (!active) return;
+        if (error) {
+          setChatError(error.message);
+        } else {
+          setChatMessages((data || []).map((m) => /** @type {ThreadMessage} */ (m)));
+          setChatError("");
+          markThreadMessagesRead(chatThreadId);
+        }
+        setChatLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [chatThreadId, chatOpen, markThreadMessagesRead]);
+
+  useEffect(() => {
+    if (!currentUserId) return;
+    const channel = supabase
+      .channel(`messages-user-${currentUserId}`)
+      .on(
+        "postgres_changes",
+        { event: "INSERT", schema: "public", table: "messages" },
+        (payload) => {
+          const newMessage = /** @type {ThreadMessage} */ (payload.new);
+          if (chatOpen && chatThreadId === newMessage.thread_id) {
+            setChatMessages((prev) => {
+              if (prev.some((msg) => msg.id === newMessage.id)) return prev;
+              return [...prev, newMessage];
+            });
+            if (newMessage.sender_id !== currentUserId) {
+              markThreadMessagesRead(newMessage.thread_id);
+            }
+          } else {
+            refreshUnread();
+          }
+        }
+      )
+      .on(
+        "postgres_changes",
+        { event: "UPDATE", schema: "public", table: "messages" },
+        (payload) => {
+          const updated = /** @type {ThreadMessage} */ (payload.new);
+          if (chatOpen && chatThreadId === updated.thread_id) {
+            setChatMessages((prev) => prev.map((msg) => (msg.id === updated.id ? { ...msg, ...updated } : msg)));
+          }
+          refreshUnread();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [currentUserId, chatOpen, chatThreadId, markThreadMessagesRead, refreshUnread]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -736,6 +1142,17 @@ export default function App() {
             <button onClick={exportCSV} className="px-3 py-1.5 rounded-xl border bg-white hover:bg-neutral-50">Eksportuj CSV</button>
             {session ? (
               <div className="flex items-center gap-2">
+                <span
+                  className={clsx(
+                    "text-sm px-2 py-1 rounded-xl border flex items-center gap-1",
+                    unreadCount
+                      ? "bg-sky-50 text-sky-700 border-sky-200"
+                      : "bg-neutral-100 text-gray-600 border-neutral-200"
+                  )}
+                >
+                  <span aria-hidden>📨</span>
+                  <span className="tabular-nums">{unreadCount}</span>
+                </span>
                 <span className="text-sm text-gray-600">{session.user.email}</span>
                 <button
                   className="px-3 py-1.5 rounded-xl border bg-white hover:bg-neutral-50"
@@ -763,7 +1180,7 @@ export default function App() {
             right={<Badge>{session ? "zalogowano" : "konto wymagane"}</Badge>}
           >
             {session ? (
-              <ListingForm onAdd={addListing} />
+              <ListingForm onAdd={addListing} ownerId={session.user.id} />
             ) : (
               <div className="space-y-3">
                 <p className="text-sm text-gray-700">
@@ -819,7 +1236,14 @@ export default function App() {
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 {filtered.map((l) => (
-                  <ListingCard key={l.id} listing={l} onDelete={deleteListing} onOpen={setSelected} />
+                  <ListingCard
+                    key={l.id}
+                    listing={l}
+                    onDelete={deleteListing}
+                    onOpen={setSelected}
+                    onMessage={openChat}
+                    currentUserId={currentUserId || undefined}
+                  />
                 ))}
               </div>
             )}
@@ -827,7 +1251,25 @@ export default function App() {
         </div>
       </main>
 
-      <DetailModal listing={selected} onClose={() => setSelected(null)} />
+      <DetailModal
+        listing={selected}
+        onClose={() => setSelected(null)}
+        onMessage={openChat}
+        currentUserId={currentUserId || undefined}
+      />
+
+      <ChatModal
+        open={chatOpen}
+        onClose={closeChat}
+        listing={chatListing}
+        messages={chatMessages}
+        loading={chatLoading}
+        error={chatError}
+        onSend={sendChatMessage}
+        sending={chatSending}
+        currentUserId={currentUserId || undefined}
+        threadReady={!!chatThreadId}
+      />
 
       <footer className="max-w-6xl mx-auto px-4 pb-12 pt-2 text-xs text-gray-500">
         <p>
