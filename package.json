@@ -9,6 +9,7 @@
     "preview": "vite preview --port 4173"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.45.4",
     "react": "^18.2.0",
     "react-dom": "^18.2.0"
   },
