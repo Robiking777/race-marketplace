@@ -38,10 +38,11 @@ const DISTANCES = /** @type {const} */ (["5 km", "10 km", "Półmaraton", "Marat
  */
 
 /**
- * @typedef {Object} ThreadMessage
- * @property {string} id
- * @property {string} thread_id
- * @property {string} sender_id
+ * @typedef {Object} DirectMessage
+ * @property {number} id
+ * @property {string} from_user
+ * @property {string} to_user
+ * @property {string | null} [listing_id]
  * @property {string} body
  * @property {string} created_at
  * @property {string | null} [read_at]
@@ -1528,8 +1529,8 @@ function AlertsList({ alerts, loading, onToggle, onDelete, onEdit, emailOptIn })
   );
 }
 
-/** @param {{ listing: Listing, onDelete: (id:string)=>void, onOpen: (listing: Listing)=>void, onMessage: (listing: Listing)=>void, currentUserId?: string, onEdit?: (listing: Listing)=>void }} props */
-function ListingCard({ listing, onDelete, onOpen, onMessage, currentUserId, onEdit }) {
+/** @param {{ listing: Listing, onDelete: (id:string)=>void, onOpen: (listing: Listing)=>void, onMessage: (listing: Listing)=>void, currentUserId?: string, onEdit?: (listing: Listing)=>void, viewerDisplayName?: string }} props */
+function ListingCard({ listing, onDelete, onOpen, onMessage, currentUserId, onEdit, viewerDisplayName }) {
   const isSell = listing.type === "sell";
   const distanceLabel = listing.distance || inferDistance(listing.raceName) || "—";
   const ownerId = getListingOwnerId(listing);
@@ -1619,8 +1620,9 @@ function ListingCard({ listing, onDelete, onOpen, onMessage, currentUserId, onEd
       {listing.description && (
         <p className="text-sm text-gray-800 mb-3">{listing.description}</p>
       )}
-      <div className="text-xs text-gray-500 mb-3">
-        Dodano: {new Date(listing.createdAt).toLocaleString("pl-PL")}
+      <div className="text-xs text-gray-500 mb-3 space-y-1">
+        <div>Dodano: {new Date(listing.createdAt).toLocaleString("pl-PL")}</div>
+        {authorLabel && <div>Autor: {authorLabel}</div>}
       </div>
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2">
@@ -1704,7 +1706,7 @@ function Terms() {
   );
 }
 
-function DetailModal({ listing, onClose, onMessage, currentUserId }) {
+function DetailModal({ listing, onClose, onMessage, currentUserId, viewerDisplayName }) {
   if (!listing) return null;
   const isSell = listing.type === "sell";
   const ownerId = getListingOwnerId(listing);
@@ -1725,6 +1727,8 @@ function DetailModal({ listing, onClose, onMessage, currentUserId }) {
       listingProofCheckedLabel = parsed.toLocaleString("pl-PL");
     }
   }
+  const authorLabel =
+    listing.author_display_name || (ownerId && ownerId === currentUserId ? viewerDisplayName : "");
   return (
     <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center" onClick={onClose}>
       <div className="bg-white rounded-2xl w-[min(92vw,700px)] p-5 shadow-xl" onClick={(e) => e.stopPropagation()}>
@@ -1777,6 +1781,7 @@ function DetailModal({ listing, onClose, onMessage, currentUserId }) {
             <div>{new Date(listing.createdAt).toLocaleString("pl-PL")}</div>
           </div>
         </div>
+        {authorLabel && <div className="text-sm text-gray-500 mb-3">Autor: {authorLabel}</div>}
         {showProof && (
           <div className="flex flex-wrap items-center gap-2 text-sm text-gray-700 mb-4">
             {maskedBib && (
@@ -1828,104 +1833,87 @@ function DetailModal({ listing, onClose, onMessage, currentUserId }) {
  * open: boolean,
  * onClose: () => void,
  * listing: Listing | null,
- * messages: ThreadMessage[],
- * loading: boolean,
+ * sending: boolean,
  * error: string,
  * onSend: (body: string) => Promise<void>,
- * sending: boolean,
- * currentUserId?: string,
- * threadReady: boolean
  * }} props */
-function ChatModal({ open, onClose, listing, messages, loading, error, onSend, sending, currentUserId, threadReady }) {
+function MessageModal({ open, onClose, listing, sending, error, onSend }) {
   const [text, setText] = useState("");
-  const bottomRef = useRef(null);
+  const [localError, setLocalError] = useState("");
 
   useEffect(() => {
     if (open) {
       setText("");
+      setLocalError("");
     }
   }, [open, listing?.id]);
-
-  useEffect(() => {
-    if (!open) return;
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, open]);
 
   if (!open || !listing) return null;
 
   async function handleSubmit(e) {
     e.preventDefault();
     const trimmed = text.trim();
-    if (!trimmed || sending) return;
+    if (!trimmed) {
+      setLocalError("Wpisz treść wiadomości.");
+      return;
+    }
+    if (trimmed.length > 4000) {
+      setLocalError("Wiadomość może mieć maks. 4000 znaków.");
+      return;
+    }
+    setLocalError("");
     try {
       await onSend(trimmed);
       setText("");
     } catch (err) {
-      console.error(err);
+      const message = err?.message || "Nie udało się wysłać wiadomości.";
+      setLocalError(message);
     }
   }
+
+  const authorLabel = listing.author_display_name ? `Autor: ${listing.author_display_name}` : "";
 
   return (
     <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center" onClick={onClose}>
       <div
-        className="bg-white rounded-2xl w-[min(95vw,720px)] h-[min(90vh,640px)] flex flex-col shadow-xl"
+        className="bg-white rounded-2xl w-[min(92vw,480px)] p-5 shadow-xl space-y-4"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="px-5 py-4 border-b flex items-center justify-between gap-3">
+        <div className="flex items-start justify-between gap-3">
           <div>
             <div className="text-sm text-gray-500">Ogłoszenie</div>
-            <div className="font-semibold">{listing.raceName}</div>
+            <div className="font-semibold text-lg leading-tight">{listing.raceName}</div>
+            {authorLabel && <div className="text-xs text-gray-500 mt-1">{authorLabel}</div>}
           </div>
-          <button className="px-3 py-1.5 rounded-lg bg-neutral-100 hover:bg-neutral-200" onClick={onClose}>
+          <button className="px-2 py-1 rounded-lg bg-neutral-100 hover:bg-neutral-200" onClick={onClose}>
             Zamknij
           </button>
         </div>
-        <div className="flex-1 overflow-y-auto px-5 py-4 space-y-3 bg-neutral-50">
-          {loading ? (
-            <div className="text-sm text-gray-500">Ładuję wiadomości…</div>
-          ) : messages.length === 0 ? (
-            <div className="text-sm text-gray-500">Brak wiadomości — napisz pierwszą.</div>
-          ) : (
-            messages.map((msg) => {
-              const isMine = msg.sender_id === currentUserId;
-              const time = new Date(msg.created_at).toLocaleString("pl-PL", {
-                hour: "2-digit",
-                minute: "2-digit",
-                day: "2-digit",
-                month: "2-digit",
-              });
-              return (
-                <div key={msg.id} className="flex flex-col">
-                  <div className={clsx("max-w-[85%] px-4 py-2 rounded-2xl", isMine ? "self-end bg-neutral-900 text-white" : "self-start bg-white border")}>{msg.body}</div>
-                  <div className={clsx("text-xs text-gray-500 mt-1", isMine ? "self-end" : "self-start")}>{time}</div>
-                </div>
-              );
-            })
-          )}
-          <div ref={bottomRef} />
-        </div>
-        <div className="px-5 py-3 border-t space-y-2 bg-white">
-          {error && <div className="text-sm text-rose-600">{error}</div>}
-          <form onSubmit={handleSubmit} className="space-y-2">
-            <textarea
-              rows={3}
-              value={text}
-              onChange={(e) => setText(e.target.value)}
-              className="w-full px-3 py-2 rounded-xl border focus:outline-none focus:ring"
-              placeholder="Twoja wiadomość…"
-              disabled={sending || loading || !threadReady}
-            />
-            <div className="flex items-center justify-end gap-2">
-              <button
-                type="submit"
-                disabled={sending || !text.trim() || loading || !threadReady}
-                className="px-4 py-2 rounded-xl bg-neutral-900 text-white disabled:opacity-50"
-              >
-                {sending ? "Wysyłam…" : "Wyślij"}
-              </button>
-            </div>
-          </form>
-        </div>
+        <form onSubmit={handleSubmit} className="space-y-3">
+          <label className="block text-sm text-gray-600" htmlFor="message-modal-textarea">
+            Wiadomość (max. 4000 znaków)
+          </label>
+          <textarea
+            id="message-modal-textarea"
+            rows={5}
+            value={text}
+            onChange={(e) => setText(e.target.value.slice(0, 4000))}
+            className="w-full px-3 py-2 rounded-xl border focus:outline-none focus:ring"
+            placeholder="Twoja wiadomość…"
+            disabled={sending}
+          />
+          {(error || localError) && <div className="text-sm text-rose-600">{error || localError}</div>}
+          <div className="flex items-center justify-end gap-2">
+            <span className="text-xs text-gray-500">{text.trim().length}/4000</span>
+            <button
+              type="submit"
+              disabled={sending}
+              className="px-4 py-2 rounded-xl bg-neutral-900 text-white disabled:opacity-50"
+            >
+              {sending ? "Wysyłam…" : "Wyślij"}
+            </button>
+          </div>
+        </form>
       </div>
     </div>
   );
@@ -1946,6 +1934,7 @@ function AuthModal({ open, onClose }) {
   const [mode, setMode] = useState("login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [displayName, setDisplayName] = useState("");
   const [loading, setLoading] = useState(false);
   const [msg, setMsg] = useState("");
 
@@ -1955,6 +1944,7 @@ function AuthModal({ open, onClose }) {
     setMode("login");
     setEmail("");
     setPassword("");
+    setDisplayName("");
     setMsg("");
     setLoading(false);
     onClose();
@@ -1964,24 +1954,46 @@ function AuthModal({ open, onClose }) {
     e.preventDefault();
     setLoading(true);
     setMsg("");
-    const action =
-      mode === "login"
-        ? supabase.auth.signInWithPassword({ email, password })
-        : supabase.auth.signUp({ email, password });
-    const { error } = await action;
-    if (error) {
-      setMsg(error.message);
+    const trimmedDisplayName = displayName.trim();
+    try {
+      if (mode === "login") {
+        const { error } = await supabase.auth.signInWithPassword({ email, password });
+        if (error) throw error;
+        setMsg("Zalogowano.");
+        handleClose();
+        return;
+      }
+
+      if (trimmedDisplayName.length < 3 || trimmedDisplayName.length > 30) {
+        setMsg("Wyświetlana nazwa musi mieć od 3 do 30 znaków.");
+        setLoading(false);
+        return;
+      }
+
+      const { data, error } = await supabase.auth.signUp({
+        email,
+        password,
+        options: { data: { display_name: trimmedDisplayName } },
+      });
+      if (error) throw error;
+
+      if (data?.user) {
+        const { error: profileError } = await supabase.from("profiles").upsert({
+          id: data.user.id,
+          display_name: trimmedDisplayName,
+        });
+        if (profileError) {
+          console.error(profileError);
+        }
+      }
+
+      setMsg("Konto utworzone. Możesz się zalogować.");
+    } catch (err) {
+      const message = err?.message || "Nie udało się przetworzyć żądania.";
+      setMsg(message);
+    } finally {
       setLoading(false);
-      return;
     }
-
-    setMsg(mode === "login" ? "Zalogowano." : "Konto utworzone. Możesz się zalogować.");
-    if (mode === "login") {
-      handleClose();
-      return;
-    }
-
-    setLoading(false);
   }
 
   return (
@@ -2006,6 +2018,19 @@ function AuthModal({ open, onClose }) {
               required
             />
           </label>
+          {mode === "register" && (
+            <label className="block">
+              <span className="block text-sm text-gray-600 mb-1">Wyświetlana nazwa (pseudonim)</span>
+              <input
+                className="w-full px-3 py-2 rounded-xl border"
+                value={displayName}
+                onChange={(e) => setDisplayName(e.target.value)}
+                minLength={3}
+                maxLength={30}
+                required
+              />
+            </label>
+          )}
           <label className="block">
             <span className="block text-sm text-gray-600 mb-1">Hasło</span>
             <input
@@ -2051,21 +2076,26 @@ export default function App() {
   const [sort, setSort] = useState("newest");
   const [activeTab, setActiveTab] = useState(/** @type {"listings" | "terms"} */("listings"));
   const [ownershipFilter, setOwnershipFilter] = useState(/** @type {"all" | "mine"} */("all"));
-  const [activeView, setActiveView] = useState(/** @type {"market" | "profile"} */("market"));
+  const [activeView, setActiveView] = useState(/** @type {"market" | "profile" | "messages"} */("market"));
   const [profileTab, setProfileTab] = useState(/** @type {"info" | "listings" | "alerts"} */("listings"));
   const [selected, setSelected] = useState/** @type {(Listing|null)} */(null);
   const [session, setSession] = useState(null);
   const [authOpen, setAuthOpen] = useState(false);
-  const [chatOpen, setChatOpen] = useState(false);
-  const [chatListing, setChatListing] = useState/** @type {(Listing|null)} */(null);
-  const [chatThreadId, setChatThreadId] = useState(/** @type {string | null} */(null));
-  const [chatMessages, setChatMessages] = useState(/** @type {ThreadMessage[]} */([]));
-  const [chatLoading, setChatLoading] = useState(false);
-  const [chatError, setChatError] = useState("");
-  const [chatSending, setChatSending] = useState(false);
+  const [messageModalOpen, setMessageModalOpen] = useState(false);
+  const [messageListing, setMessageListing] = useState/** @type {(Listing|null)} */(null);
+  const [messageSending, setMessageSending] = useState(false);
+  const [messageError, setMessageError] = useState("");
+  const [directMessages, setDirectMessages] = useState(/** @type {DirectMessage[]} */([]));
+  const [inboxLoading, setInboxLoading] = useState(false);
+  const [inboxError, setInboxError] = useState("");
+  const [selectedConversationUserId, setSelectedConversationUserId] = useState/** @type {(string|null)} */(null);
+  const [conversationSending, setConversationSending] = useState(false);
+  const [conversationError, setConversationError] = useState("");
+  const [conversationDraft, setConversationDraft] = useState("");
   const [unreadMessages, setUnreadMessages] = useState(0);
-  const [authorDisplayName, setAuthorDisplayName] = useState("");
+  const [sessionProfile, setSessionProfile] = useState(/** @type {{ display_name?: string } | null} */(null));
   const [purgeMessage, setPurgeMessage] = useState("");
+  const [toastMessage, setToastMessage] = useState("");
   const [alerts, setAlerts] = useState(/** @type {Alert[]} */([]));
   const [alertsLoading, setAlertsLoading] = useState(false);
   const [alertsError, setAlertsError] = useState("");
@@ -2076,17 +2106,30 @@ export default function App() {
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [notificationUnreadCount, setNotificationUnreadCount] = useState(0);
   const notificationsRef = useRef(/** @type {(HTMLDivElement | null)} */(null));
+  const toastTimeoutRef = useRef(/** @type {(ReturnType<typeof setTimeout> | null)} */(null));
   const [alertsMessage, setAlertsMessage] = useState("");
   const [emailOptIn, setEmailOptIn] = useState(false);
   const [emailOptInSaving, setEmailOptInSaving] = useState(false);
   const currentUserId = session?.user?.id || null;
   const sessionEmail = session?.user?.email || "";
+  const emailName = sessionEmail.includes("@") ? sessionEmail.split("@")[0] : sessionEmail;
   const profileDisplayName =
-    authorDisplayName ||
+    sessionProfile?.display_name ||
+    session?.user?.user_metadata?.display_name ||
     session?.user?.user_metadata?.full_name ||
     session?.user?.user_metadata?.name ||
-    sessionEmail;
+    emailName;
   const purgeMessageTimeoutRef = useRef(/** @type {ReturnType<typeof setTimeout> | null} */ (null));
+  const showToast = useCallback((message) => {
+    if (!message) return;
+    if (toastTimeoutRef.current) {
+      clearTimeout(toastTimeoutRef.current);
+    }
+    setToastMessage(message);
+    toastTimeoutRef.current = setTimeout(() => {
+      setToastMessage("");
+    }, 3000);
+  }, []);
 
   const syncTabWithHash = useCallback(() => {
     if (typeof window === "undefined") return;
@@ -2133,6 +2176,9 @@ export default function App() {
     return () => {
       if (purgeMessageTimeoutRef.current) {
         clearTimeout(purgeMessageTimeoutRef.current);
+      }
+      if (toastTimeoutRef.current) {
+        clearTimeout(toastTimeoutRef.current);
       }
     };
   }, []);
@@ -2182,7 +2228,7 @@ export default function App() {
       .from("messages")
       .select("id", { count: "exact", head: true })
       .is("read_at", null)
-      .neq("sender_id", currentUserId);
+      .eq("to_user", currentUserId);
     if (error) {
       console.error(error);
       return;
@@ -2431,7 +2477,6 @@ export default function App() {
 
   useEffect(() => {
     if (!session?.user) {
-      setAuthorDisplayName("");
       setActiveView("market");
       setProfileTab("listings");
       setAlerts([]);
@@ -2441,14 +2486,17 @@ export default function App() {
       setNotifications([]);
       setNotificationUnreadCount(0);
       setNotificationsOpen(false);
+      setSessionProfile(null);
+      setDirectMessages([]);
+      setSelectedConversationUserId(null);
+      setInboxError("");
+      setConversationError("");
+      setMessageModalOpen(false);
+      setMessageListing(null);
+      setMessageError("");
+      setUnreadMessages(0);
       return;
     }
-    const fallback =
-      session.user?.user_metadata?.full_name ||
-      session.user?.user_metadata?.name ||
-      session.user?.email ||
-      "";
-    setAuthorDisplayName(fallback);
     let ignore = false;
     async function loadProfile() {
       try {
@@ -2464,9 +2512,7 @@ export default function App() {
           }
           return;
         }
-        if (data?.display_name) {
-          setAuthorDisplayName(data.display_name);
-        }
+        setSessionProfile(data?.display_name ? { display_name: data.display_name } : null);
         if (typeof data?.email_notifications === "boolean") {
           setEmailOptIn(data.email_notifications);
         }
@@ -2563,193 +2609,284 @@ export default function App() {
     }
   }, [listings, editingListing]);
 
-  const openChat = useCallback(
-    async (listing) => {
+  const openMessageModal = useCallback(
+    (listing) => {
       if (!session || !currentUserId) {
         setAuthOpen(true);
         return;
       }
-
-      setChatListing(listing);
-      setChatMessages([]);
-      setChatThreadId(null);
-      setChatError("");
-      setChatOpen(true);
-
       const ownerId = getListingOwnerId(listing);
-      if (!ownerId) {
-        setChatLoading(false);
-        setChatError("Nie znaleziono właściciela ogłoszenia.");
+      if (!ownerId || ownerId === currentUserId) {
         return;
       }
-      if (ownerId === currentUserId) {
-        setChatLoading(false);
-        setChatError("To Twoje ogłoszenie — nie możesz wysłać wiadomości do siebie.");
-        return;
-      }
-
-      setChatLoading(true);
-
-      try {
-        const { data: threadsData, error } = await supabase
-          .from("threads")
-          .select("id, thread_participants ( user_id )")
-          .eq("listing_id", listing.id);
-        if (error) throw error;
-
-        let threadId = null;
-        if (Array.isArray(threadsData)) {
-          for (const thread of threadsData) {
-            const participants = (thread.thread_participants || []).map((p) => p.user_id);
-            if (participants.includes(currentUserId) && participants.includes(ownerId)) {
-              threadId = thread.id;
-              break;
-            }
-          }
-        }
-
-        if (!threadId) {
-          const { data: newThread, error: threadError } = await supabase
-            .from("threads")
-            .insert({ listing_id: listing.id })
-            .select()
-            .single();
-          if (threadError) throw threadError;
-
-          const { error: selfError } = await supabase
-            .from("thread_participants")
-            .insert({ thread_id: newThread.id, user_id: currentUserId });
-          if (selfError && selfError.code !== "23505") throw selfError;
-
-          const { error: otherError } = await supabase
-            .from("thread_participants")
-            .insert({ thread_id: newThread.id, user_id: ownerId });
-          if (otherError && otherError.code !== "23505") throw otherError;
-
-          threadId = newThread.id;
-        }
-
-        setChatThreadId(threadId);
-      } catch (err) {
-        console.error(err);
-        setChatError(err.message || "Nie udało się otworzyć czatu.");
-        setChatThreadId(null);
-        setChatLoading(false);
-      }
+      setMessageError("");
+      setMessageListing(listing);
+      setMessageModalOpen(true);
     },
     [session, currentUserId]
   );
 
-  const closeChat = useCallback(() => {
-    setChatOpen(false);
-    setChatListing(null);
-    setChatThreadId(null);
-    setChatMessages([]);
-    setChatError("");
-    setChatLoading(false);
-    setChatSending(false);
+  const closeMessageModal = useCallback(() => {
+    setMessageModalOpen(false);
+    setMessageListing(null);
+    setMessageError("");
   }, []);
 
-  const sendChatMessage = useCallback(
+  const sendDirectMessage = useCallback(
     async (body) => {
-      if (!chatThreadId || !currentUserId) {
-        throw new Error("Brak aktywnego wątku czatu.");
+      if (!session || !currentUserId || !messageListing) {
+        throw new Error("Brak danych do wysłania wiadomości.");
       }
-      setChatError("");
-      setChatSending(true);
+      const ownerId = getListingOwnerId(messageListing);
+      if (!ownerId || ownerId === currentUserId) {
+        throw new Error("Nie można wysłać wiadomości.");
+      }
+      setMessageSending(true);
+      setMessageError("");
       try {
         const { data, error } = await supabase
           .from("messages")
-          .insert({ thread_id: chatThreadId, sender_id: currentUserId, body })
+          .insert({
+            from_user: currentUserId,
+            to_user: ownerId,
+            listing_id: messageListing.id,
+            body,
+          })
           .select()
           .single();
         if (error) throw error;
         if (data) {
-          setChatMessages((prev) => {
+          setDirectMessages((prev) => {
             if (prev.some((msg) => msg.id === data.id)) return prev;
-            return [...prev, /** @type {ThreadMessage} */ (data)];
+            const next = [/** @type {DirectMessage} */ (data), ...prev];
+            return next.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
           });
         }
+        showToast("Wysłano");
+        refreshUnread();
+        closeMessageModal();
       } catch (err) {
-        setChatError(err.message || "Nie udało się wysłać wiadomości.");
-        throw err;
+        const message = err?.message || "Nie udało się wysłać wiadomości.";
+        setMessageError(message);
+        throw err instanceof Error ? err : new Error(message);
       } finally {
-        setChatSending(false);
+        setMessageSending(false);
       }
     },
-    [chatThreadId, currentUserId]
+    [session, currentUserId, messageListing, closeMessageModal, refreshUnread, showToast]
+  );
+
+  const fetchDirectMessages = useCallback(async () => {
+    if (!currentUserId) return;
+    setInboxLoading(true);
+    setInboxError("");
+    try {
+      const { data, error } = await supabase
+        .from("messages")
+        .select("id,from_user,to_user,listing_id,body,created_at,read_at")
+        .or(`from_user.eq.${currentUserId},to_user.eq.${currentUserId}`)
+        .order("created_at", { ascending: false })
+        .limit(200);
+      if (error) throw error;
+      setDirectMessages((data || []).map((item) => /** @type {DirectMessage} */ (item)));
+      refreshUnread();
+    } catch (err) {
+      console.error(err);
+      setDirectMessages([]);
+      setInboxError(err?.message || "Nie udało się pobrać wiadomości.");
+    } finally {
+      setInboxLoading(false);
+    }
+  }, [currentUserId, refreshUnread]);
+
+  useEffect(() => {
+    if (!currentUserId) return;
+    fetchDirectMessages();
+  }, [currentUserId, fetchDirectMessages]);
+
+  useEffect(() => {
+    if (activeView === "messages" && currentUserId) {
+      fetchDirectMessages();
+    }
+  }, [activeView, currentUserId, fetchDirectMessages]);
+
+  const threads = useMemo(() => {
+    if (!currentUserId) return [];
+    /** @type {{ otherUserId: string, lastMessage: DirectMessage, unreadCount: number }[]} */
+    const entries = [];
+    const map = new Map();
+    for (const msg of directMessages) {
+      const otherUser = msg.from_user === currentUserId ? msg.to_user : msg.from_user;
+      if (!otherUser) continue;
+      const existing = map.get(otherUser);
+      const unreadIncrement = msg.to_user === currentUserId && !msg.read_at ? 1 : 0;
+      if (!existing) {
+        const record = { otherUserId: otherUser, lastMessage: msg, unreadCount: unreadIncrement };
+        map.set(otherUser, record);
+        entries.push(record);
+      } else {
+        if (new Date(msg.created_at) > new Date(existing.lastMessage.created_at)) {
+          existing.lastMessage = msg;
+        }
+        existing.unreadCount += unreadIncrement;
+      }
+    }
+    return entries.sort((a, b) => new Date(b.lastMessage.created_at) - new Date(a.lastMessage.created_at));
+  }, [directMessages, currentUserId]);
+
+  useEffect(() => {
+    if (!selectedConversationUserId) {
+      if (threads.length > 0) {
+        setSelectedConversationUserId(threads[0].otherUserId);
+      }
+      return;
+    }
+    if (!threads.some((thread) => thread.otherUserId === selectedConversationUserId)) {
+      setSelectedConversationUserId(threads[0]?.otherUserId || null);
+    }
+  }, [threads, selectedConversationUserId]);
+
+  useEffect(() => {
+    setConversationDraft("");
+    setConversationError("");
+  }, [selectedConversationUserId]);
+
+  const conversationMessages = useMemo(() => {
+    if (!selectedConversationUserId || !currentUserId) return [];
+    return directMessages
+      .filter(
+        (msg) =>
+          (msg.from_user === currentUserId && msg.to_user === selectedConversationUserId) ||
+          (msg.to_user === currentUserId && msg.from_user === selectedConversationUserId)
+      )
+      .slice()
+      .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+  }, [directMessages, selectedConversationUserId, currentUserId]);
+
+  const activeConversationListing = useMemo(() => {
+    if (!conversationMessages.length) return null;
+    for (let i = conversationMessages.length - 1; i >= 0; i -= 1) {
+      const id = conversationMessages[i]?.listing_id;
+      if (!id) continue;
+      const match = listings.find((listing) => listing.id === id);
+      if (match) return match;
+    }
+    return null;
+  }, [conversationMessages, listings]);
+
+  const markConversationRead = useCallback(
+    async (otherUserId) => {
+      if (!currentUserId || !otherUserId) return;
+      const now = new Date().toISOString();
+      const { error } = await supabase
+        .from("messages")
+        .update({ read_at: now })
+        .eq("to_user", currentUserId)
+        .eq("from_user", otherUserId)
+        .is("read_at", null);
+      if (error) {
+        console.error(error);
+        return;
+      }
+      setDirectMessages((prev) =>
+        prev.map((msg) =>
+          msg.to_user === currentUserId && msg.from_user === otherUserId && !msg.read_at ? { ...msg, read_at: now } : msg
+        )
+      );
+      refreshUnread();
+    },
+    [currentUserId, refreshUnread]
   );
 
   useEffect(() => {
-    if (!currentUserId && chatOpen) {
-      closeChat();
+    if (!selectedConversationUserId || !currentUserId) return;
+    const hasUnread = conversationMessages.some((msg) => msg.to_user === currentUserId && !msg.read_at);
+    if (hasUnread) {
+      markConversationRead(selectedConversationUserId);
     }
-  }, [currentUserId, chatOpen, closeChat]);
+  }, [selectedConversationUserId, conversationMessages, currentUserId, markConversationRead]);
 
-  useEffect(() => {
-    if (!chatThreadId || !chatOpen) return;
-    let active = true;
-    setChatLoading(true);
-    supabase
-      .from("messages")
-      .select("*")
-      .eq("thread_id", chatThreadId)
-      .order("created_at", { ascending: true })
-      .then(({ data, error }) => {
-        if (!active) return;
-        if (error) {
-          setChatError(error.message);
-        } else {
-          setChatMessages((data || []).map((m) => /** @type {ThreadMessage} */ (m)));
-          setChatError("");
-          markThreadMessagesRead(chatThreadId);
+  const sendConversationMessage = useCallback(
+    async (body) => {
+      if (!currentUserId || !selectedConversationUserId) {
+        throw new Error("Brak odbiorcy rozmowy.");
+      }
+      setConversationSending(true);
+      setConversationError("");
+      try {
+        const lastListingId = conversationMessages[conversationMessages.length - 1]?.listing_id || null;
+        const { data, error } = await supabase
+          .from("messages")
+          .insert({
+            from_user: currentUserId,
+            to_user: selectedConversationUserId,
+            listing_id: lastListingId,
+            body,
+          })
+          .select()
+          .single();
+        if (error) throw error;
+        if (data) {
+          setDirectMessages((prev) => {
+            if (prev.some((msg) => msg.id === data.id)) return prev;
+            const next = [/** @type {DirectMessage} */ (data), ...prev];
+            return next.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+          });
         }
-        setChatLoading(false);
-      });
-    return () => {
-      active = false;
-    };
-  }, [chatThreadId, chatOpen, markThreadMessagesRead]);
+        showToast("Wysłano");
+        refreshUnread();
+        setConversationDraft("");
+      } catch (err) {
+        const message = err?.message || "Nie udało się wysłać wiadomości.";
+        setConversationError(message);
+        throw err instanceof Error ? err : new Error(message);
+      } finally {
+        setConversationSending(false);
+      }
+    },
+    [currentUserId, selectedConversationUserId, conversationMessages, refreshUnread, showToast]
+  );
+
+  const handleConversationSubmit = useCallback(
+    async (event) => {
+      event.preventDefault();
+      const trimmed = conversationDraft.trim();
+      if (!trimmed) return;
+      if (trimmed.length > 4000) {
+        setConversationError("Wiadomość może mieć maks. 4000 znaków.");
+        return;
+      }
+      try {
+        await sendConversationMessage(trimmed);
+      } catch (err) {
+        console.error(err);
+      }
+    },
+    [conversationDraft, sendConversationMessage]
+  );
 
   useEffect(() => {
     if (!currentUserId) return;
     const channel = supabase
-      .channel(`messages-user-${currentUserId}`)
+      .channel(`messages-to-${currentUserId}`)
       .on(
         "postgres_changes",
-        { event: "INSERT", schema: "public", table: "messages" },
+        { event: "INSERT", schema: "public", table: "messages", filter: `to_user=eq.${currentUserId}` },
         (payload) => {
-          const newMessage = /** @type {ThreadMessage} */ (payload.new);
-          if (chatOpen && chatThreadId === newMessage.thread_id) {
-            setChatMessages((prev) => {
-              if (prev.some((msg) => msg.id === newMessage.id)) return prev;
-              return [...prev, newMessage];
-            });
-            if (newMessage.sender_id !== currentUserId) {
-              markThreadMessagesRead(newMessage.thread_id);
-            }
-          } else {
-            refreshUnread();
-          }
-        }
-      )
-      .on(
-        "postgres_changes",
-        { event: "UPDATE", schema: "public", table: "messages" },
-        (payload) => {
-          const updated = /** @type {ThreadMessage} */ (payload.new);
-          if (chatOpen && chatThreadId === updated.thread_id) {
-            setChatMessages((prev) => prev.map((msg) => (msg.id === updated.id ? { ...msg, ...updated } : msg)));
-          }
+          const newMessage = /** @type {DirectMessage} */ (payload.new);
+          setDirectMessages((prev) => {
+            if (prev.some((msg) => msg.id === newMessage.id)) return prev;
+            const next = [newMessage, ...prev];
+            return next.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+          });
           refreshUnread();
         }
       )
       .subscribe();
-
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [currentUserId, chatOpen, chatThreadId, markThreadMessagesRead, refreshUnread]);
+  }, [currentUserId, refreshUnread]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -2790,12 +2927,8 @@ export default function App() {
         return;
       }
     }
-    const fallbackName =
-      authorDisplayName ||
-      session.user?.user_metadata?.full_name ||
-      session.user?.user_metadata?.name ||
-      session.user?.email ||
-      "";
+    const emailLabel = session.user?.email?.split("@")[0] || session.user?.email || "";
+    const fallbackName = profileDisplayName || emailLabel;
     const payload = {
       ...l,
       ownerId: currentUserId,
@@ -2960,17 +3093,24 @@ export default function App() {
                     </div>
                   )}
                 </div>
-                <span
+                <button
+                  type="button"
+                  onClick={() => {
+                    handleTabChange("listings");
+                    setActiveView("messages");
+                  }}
                   className={clsx(
                     "text-sm px-2 py-1 rounded-xl border flex items-center gap-1",
                     unreadMessages
                       ? "bg-sky-50 text-sky-700 border-sky-200"
-                      : "bg-neutral-100 text-gray-600 border-neutral-200"
+                      : "bg-neutral-100 text-gray-600 border-neutral-200",
+                    "hover:bg-neutral-50"
                   )}
+                  aria-label="Wiadomości"
                 >
                   <span aria-hidden>📨</span>
                   <span className="tabular-nums">{unreadMessages}</span>
-                </span>
+                </button>
                 <span className="text-sm text-gray-600">{session.user.email}</span>
                 <button
                   className="px-3 py-1.5 rounded-xl border bg-white hover:bg-neutral-50"
@@ -3006,7 +3146,7 @@ export default function App() {
                   <ListingForm
                     onAdd={addListing}
                     ownerId={session.user.id}
-                    authorDisplayName={authorDisplayName}
+                    authorDisplayName={profileDisplayName}
                     editingListing={editingListing}
                     onCancelEdit={() => setEditingListing(null)}
                     onOpenTerms={() => handleTabChange("terms")}
@@ -3095,9 +3235,10 @@ export default function App() {
                         listing={l}
                         onDelete={deleteListing}
                         onOpen={setSelected}
-                        onMessage={openChat}
+                        onMessage={openMessageModal}
                         currentUserId={currentUserId || undefined}
                         onEdit={startEditListing}
+                        viewerDisplayName={profileDisplayName}
                       />
                     ))}
                   </div>
@@ -3105,7 +3246,7 @@ export default function App() {
               </Section>
             </div>
           </main>
-        ) : (
+        ) : activeView === "profile" ? (
           <main id="ogloszenia" className="max-w-5xl mx-auto px-4 py-6 space-y-6">
             {session ? (
               <>
@@ -3193,15 +3334,16 @@ export default function App() {
                       ) : (
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                           {myListings.map((l) => (
-                            <ListingCard
-                              key={l.id}
-                              listing={l}
-                              onDelete={deleteListing}
-                              onOpen={setSelected}
-                              onMessage={openChat}
-                              currentUserId={currentUserId || undefined}
-                              onEdit={startEditListing}
-                            />
+                          <ListingCard
+                            key={l.id}
+                            listing={l}
+                            onDelete={deleteListing}
+                            onOpen={setSelected}
+                            onMessage={openMessageModal}
+                            currentUserId={currentUserId || undefined}
+                            onEdit={startEditListing}
+                            viewerDisplayName={profileDisplayName}
+                          />
                           ))}
                         </div>
                       )}
@@ -3270,6 +3412,165 @@ export default function App() {
               </Section>
             )}
           </main>
+        ) : (
+          <main className="max-w-5xl mx-auto px-4 py-6 space-y-6">
+            {session ? (
+              <Section title="Wiadomości" right={null}>
+                {threads.length === 0 ? (
+                  <div className="text-sm text-gray-500">
+                    {inboxLoading ? "Ładuję wiadomości…" : "Brak wiadomości."}
+                  </div>
+                ) : (
+                  <div className="grid gap-4 md:grid-cols-[240px_1fr]">
+                    <div className="space-y-2">
+                      {threads.map((thread) => {
+                        const isActive = thread.otherUserId === selectedConversationUserId;
+                        const previewText = thread.lastMessage.body.trim();
+                        const preview =
+                          previewText.length > 120 ? `${previewText.slice(0, 120)}…` : previewText || "—";
+                        const label = `Użytkownik ${thread.otherUserId.slice(0, 8)}…`;
+                        const time = formatRelativeTime(thread.lastMessage.created_at);
+                        return (
+                          <button
+                            key={thread.otherUserId}
+                            type="button"
+                            onClick={() => setSelectedConversationUserId(thread.otherUserId)}
+                            className={clsx(
+                              "w-full text-left px-3 py-2 rounded-xl border transition",
+                              isActive ? "bg-neutral-900 text-white" : "bg-white hover:bg-neutral-50"
+                            )}
+                          >
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="font-semibold text-sm">{label}</span>
+                              {thread.unreadCount > 0 && (
+                                <span className="text-xs rounded-full bg-sky-100 text-sky-700 px-2 py-0.5">
+                                  {thread.unreadCount}
+                                </span>
+                              )}
+                            </div>
+                            <div className={clsx("text-xs mt-1", isActive ? "text-neutral-200" : "text-gray-500")}>
+                              {time}
+                            </div>
+                            <div className={clsx("text-xs mt-1", isActive ? "text-neutral-100" : "text-gray-600")}>
+                              {preview}
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <div className="space-y-4">
+                      {selectedConversationUserId ? (
+                        <>
+                          <div className="flex items-center justify-between gap-3">
+                            <div>
+                              <div className="text-sm font-semibold text-gray-900">
+                                Rozmowa z użytkownikiem {selectedConversationUserId.slice(0, 8)}…
+                              </div>
+                              <div className="text-xs text-gray-500">
+                                {conversationMessages.length} wiadomości
+                              </div>
+                            </div>
+                            {activeConversationListing && (
+                              <button
+                                type="button"
+                                className="text-xs text-sky-600 hover:underline"
+                                onClick={() => {
+                                  setSelected(activeConversationListing);
+                                  setActiveView("market");
+                                }}
+                              >
+                                Otwórz ogłoszenie
+                              </button>
+                            )}
+                          </div>
+                          {activeConversationListing && (
+                            <div className="rounded-xl border bg-neutral-50 px-3 py-2 text-xs text-gray-600">
+                              <div className="font-semibold text-gray-800">{activeConversationListing.raceName}</div>
+                              {activeConversationListing.author_display_name && (
+                                <div>
+                                  Autor: {activeConversationListing.author_display_name}
+                                </div>
+                              )}
+                            </div>
+                          )}
+                          <div className="space-y-3 max-h-[420px] overflow-y-auto pr-1">
+                            {conversationMessages.map((msg) => {
+                              const isMine = msg.from_user === currentUserId;
+                              const time = new Date(msg.created_at).toLocaleString("pl-PL", {
+                                hour: "2-digit",
+                                minute: "2-digit",
+                                day: "2-digit",
+                                month: "2-digit",
+                              });
+                              return (
+                                <div key={msg.id} className="flex flex-col">
+                                  <div
+                                    className={clsx(
+                                      "max-w-[85%] px-4 py-2 rounded-2xl text-sm",
+                                      isMine ? "self-end bg-neutral-900 text-white" : "self-start bg-white border"
+                                    )}
+                                  >
+                                    {msg.body}
+                                  </div>
+                                  <div
+                                    className={clsx(
+                                      "text-xs text-gray-500 mt-1",
+                                      isMine ? "self-end" : "self-start"
+                                    )}
+                                  >
+                                    {time}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                          <form onSubmit={handleConversationSubmit} className="space-y-2">
+                            <textarea
+                              rows={4}
+                              value={conversationDraft}
+                              onChange={(e) => setConversationDraft(e.target.value.slice(0, 4000))}
+                              className="w-full px-3 py-2 rounded-xl border focus:outline-none focus:ring"
+                              placeholder="Napisz odpowiedź…"
+                              disabled={conversationSending}
+                            />
+                            {conversationError && <div className="text-sm text-rose-600">{conversationError}</div>}
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="text-xs text-gray-500">{conversationDraft.trim().length}/4000</span>
+                              <button
+                                type="submit"
+                                disabled={conversationSending || !conversationDraft.trim()}
+                                className="px-4 py-2 rounded-xl bg-neutral-900 text-white disabled:opacity-50"
+                              >
+                                {conversationSending ? "Wysyłam…" : "Wyślij"}
+                              </button>
+                            </div>
+                          </form>
+                        </>
+                      ) : (
+                        <div className="text-sm text-gray-500">Wybierz rozmowę po lewej stronie.</div>
+                      )}
+                    </div>
+                  </div>
+                )}
+                {inboxLoading && threads.length > 0 && (
+                  <div className="text-xs text-gray-500 mt-3">Aktualizuję listę wiadomości…</div>
+                )}
+                {inboxError && <div className="text-sm text-rose-600 mt-4">{inboxError}</div>}
+              </Section>
+            ) : (
+              <Section title="Wymagane logowanie" right={null}>
+                <div className="space-y-3">
+                  <p className="text-sm text-gray-700">Zaloguj się, aby przeglądać prywatne wiadomości.</p>
+                  <button
+                    className="px-4 py-2 rounded-xl bg-neutral-900 text-white hover:opacity-90"
+                    onClick={() => setAuthOpen(true)}
+                  >
+                    Zaloguj się / Zarejestruj
+                  </button>
+                </div>
+              </Section>
+            )}
+          </main>
         )
       ) : (
         <main className="max-w-5xl mx-auto px-4 py-6 space-y-6">
@@ -3280,21 +3581,18 @@ export default function App() {
       <DetailModal
         listing={selected}
         onClose={() => setSelected(null)}
-        onMessage={openChat}
+        onMessage={openMessageModal}
         currentUserId={currentUserId || undefined}
+        viewerDisplayName={profileDisplayName}
       />
 
-      <ChatModal
-        open={chatOpen}
-        onClose={closeChat}
-        listing={chatListing}
-        messages={chatMessages}
-        loading={chatLoading}
-        error={chatError}
-        onSend={sendChatMessage}
-        sending={chatSending}
-        currentUserId={currentUserId || undefined}
-        threadReady={!!chatThreadId}
+      <MessageModal
+        open={messageModalOpen}
+        onClose={closeMessageModal}
+        listing={messageListing}
+        sending={messageSending}
+        error={messageError}
+        onSend={sendDirectMessage}
       />
 
       <footer className="max-w-6xl mx-auto px-4 pb-12 pt-2 text-xs text-gray-500">
@@ -3311,6 +3609,16 @@ export default function App() {
           className="fixed bottom-4 right-4 px-4 py-2 rounded-xl bg-neutral-900 text-white shadow-lg text-sm"
         >
           {purgeMessage}
+        </div>
+      )}
+
+      {toastMessage && (
+        <div
+          role="status"
+          aria-live="polite"
+          className="fixed bottom-4 right-4 px-4 py-2 rounded-xl bg-emerald-600 text-white shadow-lg text-sm"
+        >
+          {toastMessage}
         </div>
       )}
 

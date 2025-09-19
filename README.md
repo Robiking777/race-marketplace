@@ -20,6 +20,8 @@ Stack: Vite + React + TailwindCSS. Dane są w localStorage przeglądarki.
 1. W Supabase uruchom kolejno migracje z katalogu `supabase/migrations` (jeśli jeszcze nie były stosowane).
 2. Następnie uruchom skrypt `supabase/alerts.sql` w edytorze SQL, aby dodać tabele `listings`, `alerts`, `notifications`, widok
    `alerts_match` oraz kolumnę `email_notifications` w tabeli `profiles`.
+3. Uruchom skrypt `supabase/messages.sql`, który dodaje tabelę profili (jeśli nie istnieje), tabelę `messages` oraz polityki RLS
+   wymagane do obsługi prywatnych wiadomości i aktualizacji pola `display_name`.
 
 Wymagane zmienne środowiskowe (Vercel):
 
