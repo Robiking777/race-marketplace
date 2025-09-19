@@ -22,6 +22,7 @@ const DISTANCES = /** @type {const} */ (["5 km", "10 km", "Półmaraton", "Marat
  * @property {number} [edition_id]
  * @property {string} [editionEventName]
  * @property {number} [editionYear]
+ * @property {string} [editionStartDate]
  * @property {string} [bib]
  * @property {"none" | "verified" | "not_found" | "error"} [proof_status]
  * @property {string} [proof_source_url]
@@ -30,6 +31,7 @@ const DISTANCES = /** @type {const} */ (["5 km", "10 km", "Półmaraton", "Marat
  * @property {string} [ownerId]
  * @property {string} [owner_id]
  * @property {string} [user_id]
+ * @property {string} [author_display_name]
  */
 
 /**
@@ -55,6 +57,39 @@ const DISTANCES = /** @type {const} */ (["5 km", "10 km", "Półmaraton", "Marat
 
 // ----------------------- Pomocnicze funkcje ----------------------
 const STORAGE_KEY = "race_listings_v1";
+
+function formatDateOnly(date) {
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) return "";
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function extractDateString(value) {
+  if (!value) return null;
+  const str = String(value).trim();
+  if (!str) return null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(str)) return str;
+  if (/^\d{4}-\d{2}-\d{2}[T\s]/.test(str)) return str.slice(0, 10);
+  const parsed = new Date(str);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return formatDateOnly(parsed);
+}
+
+function listingIsExpired(listing, todayStr) {
+  if (!todayStr) return false;
+  const eventDateStr = extractDateString(listing?.eventDate);
+  if (eventDateStr && eventDateStr < todayStr) return true;
+  if (listing?.edition_id || listing?.editionYear) {
+    const editionDateStr =
+      extractDateString(listing?.editionStartDate) ||
+      extractDateString(listing?.edition_start_date) ||
+      extractDateString(listing?.start_date);
+    if (editionDateStr && editionDateStr < todayStr) return true;
+  }
+  return false;
+}
 
 /** @returns {Listing[]} */
 function loadListings() {
@@ -317,8 +352,8 @@ function Field({ label, required, children }) {
   );
 }
 
-/** @param {{ onAdd: (l: Listing)=>void, ownerId?: string }} props */
-function ListingForm({ onAdd, ownerId }) {
+/** @param {{ onAdd: (l: Listing)=>void, ownerId?: string, authorDisplayName?: string, editingListing?: Listing | null, onCancelEdit?: ()=>void }} props */
+function ListingForm({ onAdd, ownerId, authorDisplayName, editingListing = null, onCancelEdit }) {
   /** @type {[ListingType, Function]} */
   const [type, setType] = useState(/** @type {ListingType} */("sell"));
   const [raceName, setRaceName] = useState("");
@@ -343,6 +378,7 @@ function ListingForm({ onAdd, ownerId }) {
   const [proofCheckedAt, setProofCheckedAt] = useState(/** @type {string | null} */(null));
   const [proofError, setProofError] = useState("");
   const [verifying, setVerifying] = useState(false);
+  const isEditing = !!(editingListing && editingListing.id);
 
   useEffect(() => {
     const q = searchTerm.trim();
@@ -455,6 +491,59 @@ function ListingForm({ onAdd, ownerId }) {
     setVerifying(false);
   }
 
+  useEffect(() => {
+    if (!editingListing) {
+      reset();
+      return;
+    }
+    setType(editingListing.type || "sell");
+    setRaceName(editingListing.raceName || "");
+    setEventDate(
+      extractDateString(editingListing.eventDate) ||
+        extractDateString(editingListing.editionStartDate) ||
+        extractDateString(editingListing.edition_start_date) ||
+        ""
+    );
+    setLocation(editingListing.location || "");
+    setDistance(editingListing.distance || "");
+    setPrice(
+      typeof editingListing.price === "number"
+        ? String(editingListing.price)
+        : editingListing.price
+        ? String(editingListing.price)
+        : ""
+    );
+    setContact(editingListing.contact || "");
+    setDescription(editingListing.description || "");
+    setAgree(true);
+    setSelectedEdition(
+      editingListing.edition_id
+        ? {
+            edition_id: editingListing.edition_id,
+            event_name: editingListing.editionEventName || editingListing.raceName || "",
+            city: null,
+            country_code: null,
+            year: editingListing.editionYear ?? null,
+            start_date:
+              editingListing.editionStartDate ||
+              editingListing.eventDate ||
+              editingListing.start_date ||
+              null,
+            distances: null,
+          }
+        : null
+    );
+    const existingBib = editingListing.bib || "";
+    setBib(existingBib);
+    const sourceUrl = editingListing.proof_source_url || "";
+    setStartListUrl(sourceUrl);
+    setProofStatus(editingListing.proof_status || (existingBib ? "none" : ""));
+    setProofSourceUrl(sourceUrl);
+    setProofCheckedAt(editingListing.proof_checked_at || null);
+    setProofError("");
+    setMsg("");
+  }, [editingListing]);
+
   function validate() {
     if (!raceName.trim()) return "Podaj nazwę biegu.";
     if (!distance) return "Wybierz dystans biegu.";
@@ -529,25 +618,67 @@ function ListingForm({ onAdd, ownerId }) {
       setTimeout(() => setMsg(""), 2500);
       return;
     }
-    const selected = selectedEdition;
+    const fallbackEdition =
+      (!selectedEdition && editingListing && editingListing.edition_id)
+        ? {
+            edition_id: editingListing.edition_id,
+            event_name: editingListing.editionEventName || editingListing.raceName || "",
+            year: editingListing.editionYear ?? null,
+            start_date:
+              editingListing.editionStartDate ||
+              editingListing.eventDate ||
+              editingListing.start_date ||
+              null,
+          }
+        : null;
+    const selected = selectedEdition || fallbackEdition;
+    /** @type {Listing} */
+    const base = editingListing ? { ...editingListing } : {};
+    const createdAt = editingListing?.createdAt ?? Date.now();
     /** @type {Listing} */
     const l = {
-      id: cryptoRandom(),
+      ...base,
+      id: editingListing?.id || cryptoRandom(),
       type,
       raceName: raceName.trim(),
       eventDate: eventDate || undefined,
       location: location || undefined,
-      distance: /** @type {Distance} */ (distance),
+      distance: /** @type {Distance | undefined} */ (distance || undefined),
       price: Number(price),
       contact: contact.trim(),
       description: description?.trim() || undefined,
-      createdAt: Date.now(),
-      ...(ownerId ? { ownerId } : {}),
+      createdAt,
     };
+    if (!editingListing) {
+      l.createdAt = createdAt;
+    }
+    if (ownerId) {
+      l.ownerId = ownerId;
+    }
+    if (!l.ownerId && editingListing?.ownerId) {
+      l.ownerId = editingListing.ownerId;
+    }
+    if (!l.owner_id && editingListing?.owner_id) {
+      l.owner_id = editingListing.owner_id;
+    }
+    if (authorDisplayName) {
+      l.author_display_name = authorDisplayName;
+    } else if (editingListing?.author_display_name) {
+      l.author_display_name = editingListing.author_display_name;
+    }
     if (selected) {
       l.edition_id = selected.edition_id;
       l.editionEventName = selected.event_name;
       l.editionYear = selected.year ?? undefined;
+      l.editionStartDate = selected.start_date || undefined;
+    }
+    if (!selected && editingListing) {
+      if (!editingListing.edition_id) {
+        delete l.edition_id;
+        delete l.editionEventName;
+        delete l.editionYear;
+        delete l.editionStartDate;
+      }
     }
     if (type === "sell") {
       const trimmedBib = bib.trim();
@@ -562,15 +693,41 @@ function ListingForm({ onAdd, ownerId }) {
         l.proof_status = /** @type {Listing["proof_status"]} */ (proofStatus);
         if (sourceUrl) l.proof_source_url = sourceUrl;
         if (proofCheckedAt) l.proof_checked_at = proofCheckedAt;
+      } else {
+        delete l.bib;
+        delete l.proof_status;
+        delete l.proof_source_url;
+        delete l.proof_checked_at;
       }
+    } else {
+      delete l.bib;
+      delete l.proof_status;
+      delete l.proof_source_url;
+      delete l.proof_checked_at;
     }
     onAdd(l);
     reset();
-    setMsg("Dodano ogłoszenie ✔");
+    setMsg(isEditing ? "Zapisano zmiany ✔" : "Dodano ogłoszenie ✔");
     setTimeout(() => setMsg(""), 2000);
   }
 
-  const selectedEditionMeta = selectedEdition ? formatEditionMeta(selectedEdition) : "";
+  const editionForMeta = selectedEdition ||
+    (editingListing && editingListing.edition_id
+      ? {
+          edition_id: editingListing.edition_id,
+          event_name: editingListing.editionEventName || editingListing.raceName || "",
+          city: null,
+          country_code: null,
+          year: editingListing.editionYear ?? null,
+          start_date:
+            editingListing.editionStartDate ||
+            editingListing.eventDate ||
+            editingListing.start_date ||
+            null,
+          distances: null,
+        }
+      : null);
+  const selectedEditionMeta = editionForMeta ? formatEditionMeta(editionForMeta) : "";
   const normalizedProofStatus = proofStatus || (bib ? "none" : "");
   const proofBadge = proofStatusBadgeMeta(normalizedProofStatus || "none");
   let proofCheckedLabel = "";
@@ -768,19 +925,34 @@ function ListingForm({ onAdd, ownerId }) {
       </label>
 
       <div className="flex items-center gap-3 pt-2">
-        <button className="px-4 py-2 rounded-xl bg-neutral-900 text-white hover:opacity-90" type="submit">Dodaj ogłoszenie</button>
+        <button className="px-4 py-2 rounded-xl bg-neutral-900 text-white hover:opacity-90" type="submit">
+          {isEditing ? "Zapisz zmiany" : "Dodaj ogłoszenie"}
+        </button>
+        {isEditing && (
+          <button
+            type="button"
+            onClick={() => {
+              onCancelEdit?.();
+              reset();
+            }}
+            className="px-4 py-2 rounded-xl border bg-white hover:bg-neutral-50"
+          >
+            Anuluj edycję
+          </button>
+        )}
         {msg && <span className="text-sm text-green-600">{msg}</span>}
       </div>
     </form>
   );
 }
 
-/** @param {{ listing: Listing, onDelete: (id:string)=>void, onOpen: (listing: Listing)=>void, onMessage: (listing: Listing)=>void, currentUserId?: string }} props */
-function ListingCard({ listing, onDelete, onOpen, onMessage, currentUserId }) {
+/** @param {{ listing: Listing, onDelete: (id:string)=>void, onOpen: (listing: Listing)=>void, onMessage: (listing: Listing)=>void, currentUserId?: string, onEdit?: (listing: Listing)=>void }} props */
+function ListingCard({ listing, onDelete, onOpen, onMessage, currentUserId, onEdit }) {
   const isSell = listing.type === "sell";
   const distanceLabel = listing.distance || inferDistance(listing.raceName) || "—";
   const ownerId = getListingOwnerId(listing);
   const canMessage = !!ownerId && ownerId !== currentUserId;
+  const canManage = !!currentUserId && !!ownerId && ownerId === currentUserId;
   const listingProofStatus = listing.proof_status || (listing.bib ? "none" : "");
   const listingProofBadge = proofStatusBadgeMeta(listingProofStatus || "none");
   const maskedBib = listing.bib ? maskBib(listing.bib) : "";
@@ -875,15 +1047,28 @@ function ListingCard({ listing, onDelete, onOpen, onMessage, currentUserId }) {
             </button>
           )}
         </div>
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            onDelete(listing.id);
-          }}
-          className="text-sm px-3 py-1.5 rounded-lg bg-rose-50 text-rose-700 hover:bg-rose-100"
-        >
-          Usuń
-        </button>
+        {canManage && (
+          <div className="flex items-center gap-2">
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                onEdit?.(listing);
+              }}
+              className="text-sm px-3 py-1.5 rounded-lg border bg-white hover:bg-neutral-50"
+            >
+              Edytuj
+            </button>
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                onDelete(listing.id);
+              }}
+              className="text-sm px-3 py-1.5 rounded-lg bg-rose-50 text-rose-700 hover:bg-rose-100"
+            >
+              Usuń
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -1213,10 +1398,12 @@ function AuthModal({ open, onClose }) {
 
 export default function App() {
   const [listings, setListings] = useState(/** @type {Listing[]} */([]));
+  const [editingListing, setEditingListing] = useState/** @type {(Listing|null)} */(null);
   const [query, setQuery] = useState("");
   const [typeFilter, setTypeFilter] = useState(/** @type {"all"|ListingType} */("all"));
   const [distanceFilter, setDistanceFilter] = useState(/** @type {"all" | Distance} */("all"));
   const [sort, setSort] = useState("newest");
+  const [ownershipFilter, setOwnershipFilter] = useState(/** @type {"all" | "mine"} */("all"));
   const [selected, setSelected] = useState/** @type {(Listing|null)} */(null);
   const [session, setSession] = useState(null);
   const [authOpen, setAuthOpen] = useState(false);
@@ -1228,7 +1415,55 @@ export default function App() {
   const [chatError, setChatError] = useState("");
   const [chatSending, setChatSending] = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
+  const [authorDisplayName, setAuthorDisplayName] = useState("");
+  const [purgeMessage, setPurgeMessage] = useState("");
   const currentUserId = session?.user?.id || null;
+  const purgeMessageTimeoutRef = useRef(/** @type {ReturnType<typeof setTimeout> | null} */ (null));
+
+  const showPurgeFeedback = useCallback((count) => {
+    if (!count) return;
+    if (purgeMessageTimeoutRef.current) {
+      clearTimeout(purgeMessageTimeoutRef.current);
+    }
+    setPurgeMessage(`Usunięto ${count} wygasłych ogłoszeń.`);
+    purgeMessageTimeoutRef.current = setTimeout(() => {
+      setPurgeMessage("");
+    }, 4000);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (purgeMessageTimeoutRef.current) {
+        clearTimeout(purgeMessageTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  const purgeExpiredListings = useCallback(
+    (now = new Date()) => {
+      const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      const todayStr = formatDateOnly(today);
+      if (!todayStr) return 0;
+      let removedCount = 0;
+      setListings((prev) => {
+        if (!prev.length) return prev;
+        const filtered = prev.filter((listing) => {
+          if (listingIsExpired(listing, todayStr)) {
+            removedCount += 1;
+            return false;
+          }
+          return true;
+        });
+        if (removedCount === 0) return prev;
+        return filtered;
+      });
+      if (removedCount > 0) {
+        showPurgeFeedback(removedCount);
+      }
+      return removedCount;
+    },
+    [showPurgeFeedback]
+  );
 
   const refreshUnread = useCallback(async () => {
     if (!currentUserId) {
@@ -1271,6 +1506,10 @@ export default function App() {
     const l = loadListings();
     setListings(l);
 
+    const timeout = setTimeout(() => {
+      purgeExpiredListings();
+    }, 0);
+
     // Po wejściu z kotwicą #id przewiń do ogłoszenia
     const hash = window.location.hash?.slice(1);
     if (hash) {
@@ -1278,11 +1517,22 @@ export default function App() {
         document.getElementById(hash)?.scrollIntoView({ behavior: "smooth", block: "center" });
       }, 100);
     }
-  }, []);
+
+    return () => {
+      clearTimeout(timeout);
+    };
+  }, [purgeExpiredListings]);
 
   useEffect(() => {
     saveListings(listings);
   }, [listings]);
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      purgeExpiredListings();
+    }, 1000 * 60 * 60 * 6);
+    return () => clearInterval(interval);
+  }, [purgeExpiredListings]);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => setSession(session));
@@ -1293,12 +1543,72 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (!session?.user) {
+      setAuthorDisplayName("");
+      return;
+    }
+    const fallback =
+      session.user?.user_metadata?.full_name ||
+      session.user?.user_metadata?.name ||
+      session.user?.email ||
+      "";
+    setAuthorDisplayName(fallback);
+    let ignore = false;
+    async function loadProfile() {
+      try {
+        const { data, error } = await supabase
+          .from("profiles")
+          .select("display_name")
+          .eq("id", session.user.id)
+          .maybeSingle();
+        if (ignore) return;
+        if (error) {
+          if (error.code !== "PGRST116") {
+            console.error(error);
+          }
+          return;
+        }
+        if (data?.display_name) {
+          setAuthorDisplayName(data.display_name);
+        }
+      } catch (err) {
+        if (!ignore) {
+          console.error(err);
+        }
+      }
+    }
+    loadProfile();
+    return () => {
+      ignore = true;
+    };
+  }, [session]);
+
+  useEffect(() => {
     if (!currentUserId) {
       setUnreadCount(0);
       return;
     }
     refreshUnread();
   }, [currentUserId, refreshUnread]);
+
+  useEffect(() => {
+    if (!currentUserId) {
+      setOwnershipFilter("all");
+      setEditingListing(null);
+    }
+  }, [currentUserId]);
+
+  useEffect(() => {
+    if (selected && !listings.some((l) => l.id === selected.id)) {
+      setSelected(null);
+    }
+  }, [listings, selected]);
+
+  useEffect(() => {
+    if (editingListing && !listings.some((l) => l.id === editingListing.id)) {
+      setEditingListing(null);
+    }
+  }, [listings, editingListing]);
 
   const openChat = useCallback(
     async (listing) => {
@@ -1500,21 +1810,78 @@ export default function App() {
       return okType && okQuery && okDistance;
     });
 
+    if (ownershipFilter === "mine" && currentUserId) {
+      arr = arr.filter((l) => getListingOwnerId(l) === currentUserId);
+    }
+
     if (sort === "newest") arr = arr.sort((a, b) => b.createdAt - a.createdAt);
     if (sort === "priceAsc") arr = arr.sort((a, b) => a.price - b.price);
     if (sort === "priceDesc") arr = arr.sort((a, b) => b.price - a.price);
 
     return arr;
-  }, [listings, query, typeFilter, distanceFilter, sort]);
+  }, [listings, query, typeFilter, distanceFilter, sort, ownershipFilter, currentUserId]);
 
   function addListing(l) {
-    setListings((prev) => [l, ...prev]);
+    if (!currentUserId || !session) {
+      return;
+    }
+    if (editingListing) {
+      const ownerId = getListingOwnerId(editingListing);
+      if (ownerId && ownerId !== currentUserId) {
+        setEditingListing(null);
+        return;
+      }
+    }
+    const fallbackName =
+      authorDisplayName ||
+      session.user?.user_metadata?.full_name ||
+      session.user?.user_metadata?.name ||
+      session.user?.email ||
+      "";
+    const payload = {
+      ...l,
+      ownerId: currentUserId,
+      owner_id: l.owner_id || currentUserId,
+      author_display_name: l.author_display_name || fallbackName,
+    };
+    setListings((prev) => {
+      const idx = prev.findIndex((item) => item.id === payload.id);
+      if (idx >= 0) {
+        const existing = prev[idx];
+        const ownerId = getListingOwnerId(existing);
+        if (ownerId && ownerId !== currentUserId) {
+          return prev;
+        }
+        const next = [...prev];
+        next[idx] = { ...existing, ...payload };
+        return next;
+      }
+      return [payload, ...prev];
+    });
+    setEditingListing(null);
+    purgeExpiredListings();
   }
 
   function deleteListing(id) {
+    const target = listings.find((x) => x.id === id);
+    if (!target) return;
+    const ownerId = getListingOwnerId(target);
+    if (!currentUserId || ownerId !== currentUserId) return;
     if (!confirm("Na pewno usunąć to ogłoszenie?")) return;
     setListings((prev) => prev.filter((x) => x.id !== id));
+    if (selected?.id === id) setSelected(null);
+    if (editingListing?.id === id) setEditingListing(null);
   }
+
+  const startEditListing = useCallback(
+    (listing) => {
+      if (!currentUserId) return;
+      if (getListingOwnerId(listing) !== currentUserId) return;
+      setEditingListing(listing);
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    },
+    [currentUserId]
+  );
 
   function exportCSV() {
     const headers = ["id","typ","bieg","data","lokalizacja","cena","kontakt","opis","dodano"];
@@ -1605,7 +1972,13 @@ export default function App() {
             right={<Badge>{session ? "zalogowano" : "konto wymagane"}</Badge>}
           >
             {session ? (
-              <ListingForm onAdd={addListing} ownerId={session.user.id} />
+              <ListingForm
+                onAdd={addListing}
+                ownerId={session.user.id}
+                authorDisplayName={authorDisplayName}
+                editingListing={editingListing}
+                onCancelEdit={() => setEditingListing(null)}
+              />
             ) : (
               <div className="space-y-3">
                 <p className="text-sm text-gray-700">
@@ -1655,6 +2028,30 @@ export default function App() {
                 <option value="priceAsc">Cena rosnąco</option>
                 <option value="priceDesc">Cena malejąco</option>
               </select>
+              {session && (
+                <div className="flex rounded-xl border overflow-hidden text-sm">
+                  <button
+                    type="button"
+                    onClick={() => setOwnershipFilter("all")}
+                    className={clsx(
+                      "px-3 py-2",
+                      ownershipFilter === "all" ? "bg-neutral-900 text-white" : "bg-white hover:bg-neutral-50"
+                    )}
+                  >
+                    Wszystkie
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setOwnershipFilter("mine")}
+                    className={clsx(
+                      "px-3 py-2 border-l",
+                      ownershipFilter === "mine" ? "bg-neutral-900 text-white" : "bg-white hover:bg-neutral-50"
+                    )}
+                  >
+                    Moje
+                  </button>
+                </div>
+              )}
             </div>
             {filtered.length === 0 ? (
               <div className="text-sm text-gray-600">Brak ogłoszeń dla wybranych filtrów.</div>
@@ -1668,6 +2065,7 @@ export default function App() {
                     onOpen={setSelected}
                     onMessage={openChat}
                     currentUserId={currentUserId || undefined}
+                    onEdit={startEditListing}
                   />
                 ))}
               </div>
@@ -1702,6 +2100,16 @@ export default function App() {
           upewnij się, że działasz zgodnie z regulaminem organizatora.
         </p>
       </footer>
+
+      {purgeMessage && (
+        <div
+          role="status"
+          aria-live="polite"
+          className="fixed bottom-4 right-4 px-4 py-2 rounded-xl bg-neutral-900 text-white shadow-lg text-sm"
+        >
+          {purgeMessage}
+        </div>
+      )}
 
       <AuthModal open={authOpen} onClose={() => setAuthOpen(false)} />
     </div>
