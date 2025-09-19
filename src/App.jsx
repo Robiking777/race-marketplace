@@ -4,7 +4,17 @@ import { supabase } from "./lib/supabase";
 // ----------------------------- Typy -----------------------------
 /** @typedef {"sell" | "buy"} ListingType */
 
-const DISTANCES = /** @type {const} */ (["5 km", "10 km", "Półmaraton", "Maraton", "Ultramaraton"]);
+const DISTANCES = /** @type {const} */ ([
+  "5 km",
+  "10 km",
+  "15 km",
+  "Półmaraton",
+  "30 km",
+  "Maraton",
+  "Ultramaraton",
+  "50 km",
+  "100 km",
+]);
 
 /** @typedef {typeof DISTANCES[number]} Distance */
 
@@ -18,7 +28,8 @@ const DISTANCES = /** @type {const} */ (["5 km", "10 km", "Półmaraton", "Marat
  * @property {number} price
  * @property {string} contact
  * @property {string} [description]
- * @property {Distance} [distance]
+ * @property {string} [distance]
+ * @property {number} [distanceKm]
  * @property {number} [edition_id]
  * @property {string} [editionEventName]
  * @property {number} [editionYear]
@@ -165,6 +176,31 @@ function maskBib(value = "") {
   return `${"•".repeat(Math.max(3, input.length - 3))}${visible}`;
 }
 
+function parseDistanceToKm(s) {
+  if (!s) return undefined;
+  const t = String(s).toLowerCase().trim();
+  if (t.includes("ultra")) return 50;
+  if (t.includes("półmaraton") || t.includes("polmaraton") || t.includes("half")) return 21.0975;
+  if ((t.includes("maraton") || t.includes("marathon")) && !t.includes("pół") && !t.includes("pol") && !t.includes("half")) {
+    return 42.195;
+  }
+  const m = t.match(/(\d+(?:[.,]\d+)?)\s*(k|km|kil|kilometr)/);
+  if (!m) return undefined;
+  return parseFloat(m[1].replace(",", "."));
+}
+
+function distanceBand(km) {
+  if (km == null || isNaN(km)) return null;
+  if (km <= 5) return { key: "up_to_5", label: "≤5 km", cls: "bg-emerald-100 text-emerald-800" };
+  if (km > 5 && km <= 10) return { key: "5_to_10", label: "5–10 km", cls: "bg-cyan-100 text-cyan-800" };
+  if (km >= 21.0 && km <= 21.2) return { key: "half", label: "Półmaraton", cls: "bg-indigo-100 text-indigo-800" };
+  if (km > 10 && km < 21.0) return { key: "10_to_half", label: "10–21 km", cls: "bg-sky-100 text-sky-800" };
+  if (km >= 42.0 && km <= 42.4) return { key: "marathon", label: "Maraton", cls: "bg-amber-100 text-amber-800" };
+  if (km > 21.2 && km < 42.0) return { key: "half_to_mar", label: "21–42 km", cls: "bg-fuchsia-100 text-fuchsia-800" };
+  if (km > 42.4) return { key: "ultra", label: "Ultramaraton", cls: "bg-rose-100 text-rose-800" };
+  return null;
+}
+
 function formatEditionMeta(item) {
   if (!item) return "";
   const locationParts = [item.city, item.country_code].filter(Boolean);
@@ -203,6 +239,10 @@ function inferDistance(raceName = "") {
   if (lower.includes("ultra")) return "Ultramaraton";
   if (lower.includes("pół") || lower.includes("pol") || lower.includes("half")) return "Półmaraton";
   if (lower.includes("marat") && !lower.includes("pół")) return "Maraton";
+  if (lower.includes("100")) return "100 km";
+  if (lower.includes("50")) return "50 km";
+  if (lower.includes("30")) return "30 km";
+  if (lower.includes("15")) return "15 km";
   if (lower.includes("10")) return "10 km";
   if (lower.includes("5")) return "5 km";
   return undefined;
@@ -262,11 +302,52 @@ function getListingOwnerId(listing) {
 function migrateListings(listings) {
   let changed = false;
   const migrated = listings.map((l) => {
-    if (l.distance) return l;
-    const inferred = inferDistance(l.raceName || "");
-    if (inferred) {
+    let next = l;
+    let mutated = false;
+    const rawDistance = typeof l.distance === "string" ? l.distance.trim() : "";
+    let distanceValue = rawDistance;
+    if (rawDistance !== (l.distance || "")) {
+      next = mutated ? next : { ...l };
+      mutated = true;
+      if (rawDistance) {
+        next.distance = rawDistance;
+      } else {
+        delete next.distance;
+      }
+      distanceValue = rawDistance;
+    }
+    if (!distanceValue) {
+      const inferred = inferDistance(l.raceName || "");
+      if (inferred) {
+        if (!mutated) {
+          next = { ...l };
+          mutated = true;
+        }
+        next.distance = inferred;
+        distanceValue = inferred;
+      }
+    }
+    const computedKm = Number.isFinite(l.distanceKm)
+      ? l.distanceKm
+      : parseDistanceToKm(distanceValue || l.distance);
+    if (Number.isFinite(computedKm)) {
+      if (!Number.isFinite(l.distanceKm) || l.distanceKm !== computedKm) {
+        if (!mutated) {
+          next = { ...l };
+          mutated = true;
+        }
+        next.distanceKm = computedKm;
+      }
+    } else if (typeof l.distanceKm === "number") {
+      if (!mutated) {
+        next = { ...l };
+        mutated = true;
+      }
+      delete next.distanceKm;
+    }
+    if (mutated) {
       changed = true;
-      return { ...l, distance: inferred };
+      return next;
     }
     return l;
   });
@@ -381,8 +462,21 @@ function demoSeed() {
       createdAt: now - 1000 * 60 * 60 * 192,
     },
   ];
-  saveListings(data);
-  return data;
+  const enriched = data.map((item) => {
+    const inferredDistance = item.distance || inferDistance(item.raceName) || "";
+    const km = parseDistanceToKm(inferredDistance);
+    if (!inferredDistance && !Number.isFinite(km)) return item;
+    const next = { ...item };
+    if (inferredDistance) {
+      next.distance = inferredDistance;
+    }
+    if (Number.isFinite(km)) {
+      next.distanceKm = km;
+    }
+    return next;
+  });
+  saveListings(enriched);
+  return enriched;
 }
 
 function cryptoRandom() {
@@ -534,9 +628,7 @@ function ListingForm({ onAdd, ownerId, authorDisplayName, editingListing = null,
     setEventDate(item.start_date || "");
     if (Array.isArray(item.distances) && item.distances.length === 1) {
       const first = item.distances[0] || "";
-      if (DISTANCES.includes(first)) {
-        setDistance(first);
-      }
+      setDistance(typeof first === "string" ? first.trim() : String(first || ""));
     }
   }
 
@@ -577,7 +669,7 @@ function ListingForm({ onAdd, ownerId, authorDisplayName, editingListing = null,
         ""
     );
     setLocation(editingListing.location || "");
-    setDistance(editingListing.distance || "");
+    setDistance((editingListing.distance || "").trim());
     setPrice(
       typeof editingListing.price === "number"
         ? String(editingListing.price)
@@ -618,7 +710,7 @@ function ListingForm({ onAdd, ownerId, authorDisplayName, editingListing = null,
 
   function validate() {
     if (!raceName.trim()) return "Podaj nazwę biegu.";
-    if (!distance) return "Wybierz dystans biegu.";
+    if (!distance.trim()) return "Wybierz dystans biegu.";
     if (!price || isNaN(Number(price)) || Number(price) <= 0) return "Podaj poprawną kwotę.";
     if (!contact.trim()) return "Podaj kontakt (e-mail/telefon).";
     if (!agree) return "Musisz zaakceptować regulamin i zasady transferu pakietu.";
@@ -715,12 +807,22 @@ function ListingForm({ onAdd, ownerId, authorDisplayName, editingListing = null,
       raceName: raceName.trim(),
       eventDate: eventDate || undefined,
       location: location || undefined,
-      distance: /** @type {Distance | undefined} */ (distance || undefined),
       price: Number(price),
       contact: contact.trim(),
       description: description?.trim() || undefined,
       createdAt,
     };
+    const trimmedDistance = (distance || "").trim();
+    l.distance = trimmedDistance;
+    const km = parseDistanceToKm(l.distance);
+    if (Number.isFinite(km)) {
+      l.distanceKm = km;
+    } else {
+      delete l.distanceKm;
+    }
+    if (!trimmedDistance) {
+      delete l.distance;
+    }
     if (!editingListing) {
       l.createdAt = createdAt;
     }
@@ -905,21 +1007,21 @@ function ListingForm({ onAdd, ownerId, authorDisplayName, editingListing = null,
       </div>
 
       <Field label="Dystans" required>
-        <select
-          value={distance}
-          onChange={(e) => setDistance(e.target.value)}
-          className="w-full px-3 py-2 rounded-xl border focus:outline-none focus:ring"
-          required
-        >
-          <option value="" disabled>
-            Wybierz dystans…
-          </option>
-          {DISTANCES.map((d) => (
-            <option key={d} value={d}>
-              {d}
-            </option>
-          ))}
-        </select>
+        <>
+          <input
+            value={distance}
+            onChange={(e) => setDistance(e.target.value)}
+            className="w-full px-3 py-2 rounded-xl border focus:outline-none focus:ring"
+            list="listing-distance-options"
+            placeholder="np. 10 km"
+            required
+          />
+          <datalist id="listing-distance-options">
+            {DISTANCES.map((d) => (
+              <option key={d} value={d} />
+            ))}
+          </datalist>
+        </>
       </Field>
 
       <Field label={type === "sell" ? "Cena (PLN)" : "Budżet / proponowana kwota (PLN)"} required>
@@ -1449,7 +1551,9 @@ function AlertsList({ alerts, loading, onToggle, onDelete, onEdit, emailOptIn })
 /** @param {{ listing: Listing, onDelete: (id:string)=>void, onOpen: (listing: Listing)=>void, onMessage: (listing: Listing)=>void, currentUserId?: string, onEdit?: (listing: Listing)=>void }} props */
 function ListingCard({ listing, onDelete, onOpen, onMessage, currentUserId, onEdit }) {
   const isSell = listing.type === "sell";
-  const distanceLabel = listing.distance || inferDistance(listing.raceName) || "—";
+  const distanceLabel = (listing.distance || inferDistance(listing.raceName) || "").trim();
+  const kmValue = Number.isFinite(listing.distanceKm) ? listing.distanceKm : parseDistanceToKm(distanceLabel || listing.distance);
+  const band = distanceBand(kmValue);
   const ownerId = getListingOwnerId(listing);
   const canMessage = !!ownerId && ownerId !== currentUserId;
   const canManage = !!currentUserId && !!ownerId && ownerId === currentUserId;
@@ -1467,11 +1571,21 @@ function ListingCard({ listing, onDelete, onOpen, onMessage, currentUserId, onEd
   return (
     <div
       id={listing.id}
-      className="rounded-2xl border p-4 hover:shadow-sm transition bg-white cursor-pointer"
+      className="relative rounded-2xl border p-4 hover:shadow-sm transition bg-white cursor-pointer"
       onClick={() => onOpen(listing)}
       tabIndex={0}
       onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && onOpen(listing)}
     >
+      {band && (
+        <div className="absolute top-3 right-3">
+          <span
+            className={`px-2 py-1 rounded-full text-xs font-medium ${band.cls}`}
+            title={distanceLabel || band.label}
+          >
+            {band.label}
+          </span>
+        </div>
+      )}
       <div className="flex items-center justify-between gap-3 mb-2">
         <div className="flex items-center gap-2 flex-wrap">
           <Badge color={isSell ? "bg-emerald-100 text-emerald-800" : "bg-sky-100 text-sky-800"}>{isSell ? "SPRZEDAM" : "KUPIĘ"}</Badge>
@@ -1499,10 +1613,6 @@ function ListingCard({ listing, onDelete, onOpen, onMessage, currentUserId, onEd
         <div>
           <span className="block text-gray-500">Lokalizacja</span>
           <span>{listing.location || "—"}</span>
-        </div>
-        <div>
-          <span className="block text-gray-500">Dystans</span>
-          <span>{distanceLabel}</span>
         </div>
       </div>
       {showProof && (
@@ -1584,6 +1694,9 @@ function DetailModal({ listing, onClose, onMessage, currentUserId }) {
   const maskedBib = listing.bib ? maskBib(listing.bib) : "";
   const proofUrl = listing.proof_source_url || "";
   const showProof = isSell && (listing.bib || (listing.proof_status && listing.proof_status !== "none"));
+  const distanceLabel = (listing.distance || inferDistance(listing.raceName) || "").trim();
+  const kmValue = Number.isFinite(listing.distanceKm) ? listing.distanceKm : parseDistanceToKm(distanceLabel || listing.distance);
+  const band = distanceBand(kmValue);
   let listingProofCheckedLabel = "";
   if (listing.proof_checked_at) {
     const parsed = new Date(listing.proof_checked_at);
@@ -1593,7 +1706,14 @@ function DetailModal({ listing, onClose, onMessage, currentUserId }) {
   }
   return (
     <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center" onClick={onClose}>
-      <div className="bg-white rounded-2xl w-[min(92vw,700px)] p-5 shadow-xl" onClick={(e) => e.stopPropagation()}>
+      <div className="relative bg-white rounded-2xl w-[min(92vw,700px)] p-5 shadow-xl" onClick={(e) => e.stopPropagation()}>
+        {band && (
+          <div className="absolute top-3 right-3">
+            <span className={`px-2 py-1 rounded-full text-xs font-medium ${band.cls}`} title={distanceLabel || band.label}>
+              {band.label}
+            </span>
+          </div>
+        )}
         <div className="flex items-start justify-between gap-3 mb-3">
           <div className="flex items-center gap-2">
             <span className={"px-2 py-0.5 rounded-full text-xs font-medium " + (isSell ? "bg-emerald-100 text-emerald-800" : "bg-sky-100 text-sky-800")}>
@@ -1620,10 +1740,10 @@ function DetailModal({ listing, onClose, onMessage, currentUserId }) {
             <div className="text-gray-500">Lokalizacja</div>
             <div>{listing.location || "—"}</div>
           </div>
-          {listing.distance && (
+          {(listing.distance || distanceLabel) && (
             <div>
               <div className="text-gray-500">Dystans</div>
-              <div>{listing.distance}</div>
+              <div>{listing.distance || distanceLabel}</div>
             </div>
           )}
           <div>
@@ -2572,7 +2692,24 @@ export default function App() {
         l.raceName.toLowerCase().includes(q) ||
         (l.location || "").toLowerCase().includes(q) ||
         (l.description || "").toLowerCase().includes(q);
-      const okDistance = distanceFilter === "all" || (l.distance || inferDistance(l.raceName)) === distanceFilter;
+      const okDistance = (() => {
+        if (distanceFilter === "all") return true;
+        const listingDistanceLabel = (l.distance || inferDistance(l.raceName) || "").trim();
+        const listingKm = Number.isFinite(l.distanceKm)
+          ? l.distanceKm
+          : parseDistanceToKm(listingDistanceLabel || l.distance);
+        const filterKm = parseDistanceToKm(distanceFilter);
+        const listingBand = distanceBand(listingKm);
+        const filterBand = distanceBand(filterKm);
+        if (listingBand && filterBand && listingBand.key === filterBand.key) return true;
+        if (listingDistanceLabel && distanceFilter) {
+          return listingDistanceLabel.toLowerCase() === distanceFilter.trim().toLowerCase();
+        }
+        if (Number.isFinite(listingKm) && Number.isFinite(filterKm)) {
+          return Math.abs(listingKm - filterKm) < 0.25;
+        }
+        return false;
+      })();
       return okType && okQuery && okDistance;
     });
 
