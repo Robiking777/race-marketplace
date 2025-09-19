@@ -5,6 +5,8 @@ import { supabase } from "./lib/supabase";
 /** @typedef {"sell" | "buy"} ListingType */
 
 const DISTANCES = /** @type {const} */ (["5 km", "10 km", "Półmaraton", "Maraton", "Ultramaraton"]);
+const DEFAULT_IMPORT_FROM = "2025-10-01";
+const DEFAULT_IMPORT_TO = "2026-12-31";
 
 /** @typedef {typeof DISTANCES[number]} Distance */
 
@@ -1929,6 +1931,18 @@ export default function App() {
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [notificationUnreadCount, setNotificationUnreadCount] = useState(0);
   const notificationsRef = useRef(/** @type {(HTMLDivElement | null)} */(null));
+  const [profileRole, setProfileRole] = useState("");
+  const [importFromDate, setImportFromDate] = useState(DEFAULT_IMPORT_FROM);
+  const [importToDate, setImportToDate] = useState(DEFAULT_IMPORT_TO);
+  const [importSummary, setImportSummary] = useState(/** @type {null | Record<string, any>} */(null));
+  const [importError, setImportError] = useState("");
+  const [importingRaces, setImportingRaces] = useState(false);
+  const isAdmin = profileRole === "admin";
+  const importRangeInvalid = Boolean(
+    importFromDate &&
+    importToDate &&
+    importFromDate > importToDate
+  );
   const [alertsMessage, setAlertsMessage] = useState("");
   const [emailOptIn, setEmailOptIn] = useState(false);
   const [emailOptInSaving, setEmailOptInSaving] = useState(false);
@@ -2079,6 +2093,50 @@ export default function App() {
       }
     },
     [currentUserId]
+  );
+
+  const handleImportSubmit = useCallback(
+    async (event) => {
+      event.preventDefault();
+      if (importingRaces) return;
+      if (importRangeInvalid) {
+        setImportError("Zakres dat jest nieprawidłowy.");
+        setImportSummary(null);
+        return;
+      }
+      setImportError("");
+      setImportSummary(null);
+      setImportingRaces(true);
+      try {
+        const payload = {};
+        if (importFromDate) payload.from = importFromDate;
+        if (importToDate) payload.to = importToDate;
+        const response = await fetch("/api/import-maratonypolskie", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        let data = null;
+        try {
+          data = await response.json();
+        } catch (err) {
+          if (response.ok) {
+            throw err;
+          }
+        }
+        if (!response.ok) {
+          const message = data?.error || "Import nie powiódł się.";
+          throw new Error(message);
+        }
+        setImportSummary(data || {});
+      } catch (err) {
+        console.error(err);
+        setImportError(err?.message || "Import nie powiódł się.");
+      } finally {
+        setImportingRaces(false);
+      }
+    },
+    [importFromDate, importToDate, importRangeInvalid, importingRaces]
   );
 
   const handleAlertSubmit = useCallback(
@@ -2254,6 +2312,12 @@ export default function App() {
       setNotifications([]);
       setNotificationUnreadCount(0);
       setNotificationsOpen(false);
+      setProfileRole("");
+      setImportSummary(null);
+      setImportError("");
+      setImportingRaces(false);
+      setImportFromDate(DEFAULT_IMPORT_FROM);
+      setImportToDate(DEFAULT_IMPORT_TO);
       return;
     }
     const fallback =
@@ -2267,7 +2331,7 @@ export default function App() {
       try {
         const { data, error } = await supabase
           .from("profiles")
-          .select("display_name,email_notifications")
+          .select("display_name,email_notifications,role")
           .eq("id", session.user.id)
           .maybeSingle();
         if (ignore) return;
@@ -2283,9 +2347,11 @@ export default function App() {
         if (typeof data?.email_notifications === "boolean") {
           setEmailOptIn(data.email_notifications);
         }
+        setProfileRole(data?.role || "");
       } catch (err) {
         if (!ignore) {
           console.error(err);
+          setProfileRole("");
         }
       }
     }
@@ -2735,6 +2801,51 @@ export default function App() {
           </nav>
           <div className="md:ml-auto flex items-center gap-2">
             <button onClick={exportCSV} className="px-3 py-1.5 rounded-xl border bg-white hover:bg-neutral-50">Eksportuj CSV</button>
+            {isAdmin && (
+              <form
+                onSubmit={handleImportSubmit}
+                className="flex flex-wrap items-center gap-2 rounded-2xl border bg-white px-3 py-2 text-xs text-gray-700"
+              >
+                <label className="flex items-center gap-1">
+                  <span className="text-[11px] uppercase tracking-wide text-gray-500">Od</span>
+                  <input
+                    type="date"
+                    value={importFromDate}
+                    onChange={(event) => {
+                      setImportFromDate(event.target.value);
+                      setImportError("");
+                    }}
+                    className="w-32 rounded-lg border px-2 py-1"
+                  />
+                </label>
+                <label className="flex items-center gap-1">
+                  <span className="text-[11px] uppercase tracking-wide text-gray-500">Do</span>
+                  <input
+                    type="date"
+                    value={importToDate}
+                    onChange={(event) => {
+                      setImportToDate(event.target.value);
+                      setImportError("");
+                    }}
+                    className="w-32 rounded-lg border px-2 py-1"
+                  />
+                </label>
+                <button
+                  type="submit"
+                  disabled={importingRaces || importRangeInvalid}
+                  className={clsx(
+                    "rounded-xl border px-3 py-1.5 text-xs font-medium",
+                    importingRaces
+                      ? "bg-neutral-200 text-neutral-600 cursor-wait"
+                      : "bg-neutral-900 text-white hover:opacity-90",
+                    importRangeInvalid && "opacity-60 cursor-not-allowed"
+                  )}
+                  title={importRangeInvalid ? "Zakres dat jest nieprawidłowy." : undefined}
+                >
+                  {importingRaces ? "Importuję…" : "Importuj biegi (MaratonyPolskie)"}
+                </button>
+              </form>
+            )}
             {session ? (
               <div className="flex items-center gap-2">
                 <div className="relative" ref={notificationsRef}>
@@ -2825,6 +2936,42 @@ export default function App() {
           </div>
         </div>
       </header>
+
+      {isAdmin && (importSummary || importError) && (
+        <div className="max-w-6xl mx-auto px-4 mt-4">
+          {importError ? (
+            <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+              {importError}
+            </div>
+          ) : (
+            <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+              <div className="font-semibold">Import zakończony.</div>
+              <div className="mt-1 text-xs text-emerald-900">
+                Zakres: {(importSummary?.from || importFromDate || DEFAULT_IMPORT_FROM).replace(/T.*$/, "")} – {(
+                  importSummary?.to || importToDate || DEFAULT_IMPORT_TO
+                ).replace(/T.*$/, "")}
+              </div>
+              <div className="mt-3 grid grid-cols-1 gap-y-1 gap-x-4 sm:grid-cols-2 lg:grid-cols-3">
+                <div>
+                  Nowe wydarzenia: <span className="font-mono font-semibold">{importSummary?.insertedEvents ?? 0}</span>
+                </div>
+                <div>
+                  Zaktualizowane wydarzenia: <span className="font-mono font-semibold">{importSummary?.updatedEvents ?? 0}</span>
+                </div>
+                <div>
+                  Nowe edycje: <span className="font-mono font-semibold">{importSummary?.insertedEditions ?? 0}</span>
+                </div>
+                <div>
+                  Zaktualizowane edycje: <span className="font-mono font-semibold">{importSummary?.updatedEditions ?? 0}</span>
+                </div>
+                <div>
+                  Przeskanowane strony: <span className="font-mono font-semibold">{importSummary?.scannedPages ?? 0}</span>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {activeView === "market" ? (
         <main className="max-w-6xl mx-auto px-4 py-6 grid grid-cols-1 lg:grid-cols-3 gap-6">
