@@ -135,9 +135,10 @@ function resolveUrl(href) {
 }
 
 async function makeUniqueSlug(name, city) {
-  const base = slugify(name, { lower: true, strict: true });
-  const c = city ? slugify(city, { lower: true, strict: true }) : '';
-  let cand = c ? `${base}-${c}` : base;
+  const nameSlug = slugify(name, { lower: true, strict: true });
+  const citySlug = city ? slugify(city, { lower: true, strict: true }) : null;
+  const base = citySlug ? `${nameSlug}-${citySlug}` : nameSlug;
+  let cand = base;
   let i = 2;
 
   while (true) {
@@ -155,11 +156,33 @@ async function makeUniqueSlug(name, city) {
       return cand;
     }
 
-    const next = c ? `${base}-${c}-${i}` : `${base}-${i}`;
+    const next = `${base}-${i}`;
     console.log(`[scraper] slug collision for ${cand} -> using ${next}`);
     cand = next;
     i += 1;
   }
+}
+
+async function findEventByNameCity(name, city) {
+  const query = supabase.from('events').select('id').limit(1);
+
+  if (name) {
+    query.ilike('name', name);
+  }
+
+  if (city) {
+    query.ilike('city', city);
+  } else {
+    query.is('city', null);
+  }
+
+  const { data, error } = await query;
+
+  if (error) {
+    throw error;
+  }
+
+  return data && data.length ? data[0] : null;
 }
 
 function partsAfterDate(rowText, dateText) {
@@ -386,22 +409,15 @@ async function collectItems(offset) {
 }
 
 async function upsertEvent({ name, city }) {
-  const { data: exByNC, error: existingError } = await supabase
-    .from('events')
-    .select('id')
-    .ilike('name', name)
-    .ilike('city', city)
-    .limit(1);
+  const existing = await findEventByNameCity(name, city);
 
-  if (existingError) {
-    throw existingError;
+  if (existing) {
+    return { id: existing.id, created: false };
   }
-
-  if (exByNC?.length) return exByNC[0].id;
 
   while (true) {
     const slug = await makeUniqueSlug(name, city);
-    const ins = await supabase
+    const { data, error } = await supabase
       .from('events')
       .insert({
         name,
@@ -413,16 +429,16 @@ async function upsertEvent({ name, city }) {
       .select('id')
       .single();
 
-    if (!ins.error) {
-      return ins.data.id;
+    if (!error) {
+      return { id: data.id, created: true };
     }
 
-    if (ins.error.code === '23505') {
+    if (error.code === '23505') {
       console.log(`[scraper] slug collision during insert -> retrying`);
       continue;
     }
 
-    throw ins.error;
+    throw error;
   }
 }
 
@@ -485,9 +501,29 @@ async function upsertEdition(eventId, date, distances) {
   return { id: data.id, action: 'inserted' };
 }
 
-export async function run({ from = FROM, to = TO, maxPages = MAX_PAGES } = {}) {
+export async function runScraperChunk({ from, to, cursor = 0, timeBudgetMs = 45000 } = {}) {
+  if (!from || !to) {
+    throw new Error('Both `from` and `to` parameters are required.');
+  }
+
+  const fromDate = new Date(from);
+  const toDate = new Date(to);
+  if (Number.isNaN(fromDate.getTime()) || Number.isNaN(toDate.getTime())) {
+    throw new Error('Invalid `from` or `to` date. Expected format YYYY-MM-DD.');
+  }
+  if (fromDate > toDate) {
+    throw new Error('`from` date must be earlier than or equal to `to` date.');
+  }
+
+  const initialCursor = Number.parseInt(cursor, 10);
+  let offset = Number.isNaN(initialCursor) || initialCursor < 0 ? 0 : initialCursor;
+  const numericBudget =
+    typeof timeBudgetMs === 'number' ? timeBudgetMs : Number.parseInt(timeBudgetMs, 10);
+  const effectiveBudget = Number.isFinite(numericBudget) && numericBudget > 0 ? numericBudget : 45000;
+
   const stats = {
     pagesFetched: 0,
+    pagesWithoutResults: 0,
     itemsFound: 0,
     itemsInRange: 0,
     eventsCreated: 0,
@@ -497,15 +533,23 @@ export async function run({ from = FROM, to = TO, maxPages = MAX_PAGES } = {}) {
     editionsSkipped: 0,
     skippedMissingName: 0,
     skippedMissingCity: 0,
-    pagesWithoutResults: 0,
+    seen: 0,
+    inserted: 0,
   };
 
-  const fromDate = new Date(from);
-  const toDate = new Date(to);
-  let offset = 0;
+  const startTime = Date.now();
+  let timeExceeded = false;
+  let done = false;
+  let nextCursor = offset;
   let sawInRange = false;
 
-  while (offset < maxPages) {
+  while (offset < MAX_PAGES) {
+    if (Date.now() - startTime >= effectiveBudget) {
+      timeExceeded = true;
+      nextCursor = offset;
+      break;
+    }
+
     let pageItems;
     try {
       pageItems = await collectItems(offset);
@@ -519,32 +563,65 @@ export async function run({ from = FROM, to = TO, maxPages = MAX_PAGES } = {}) {
     if (!pageItems.items.length) {
       stats.pagesWithoutResults += 1;
       console.log(`[scraper] Page ${offset} returned no events. Stopping.`);
+      done = true;
+      nextCursor = null;
       break;
     }
 
     const sorted = [...pageItems.items].sort((a, b) => a.date - b.date);
     stats.itemsFound += sorted.length;
 
+    const earliest = sorted[0]?.date;
+    if (earliest && earliest > toDate) {
+      console.log(
+        `[scraper] Earliest event on page ${offset} (${formatDate(earliest)}) is after ${formatDate(toDate)}. Stopping.`,
+      );
+      done = true;
+      nextCursor = null;
+      break;
+    }
+
     const inRange = sorted.filter((item) => item.date >= fromDate && item.date <= toDate);
     console.log(
       `[scraper] Page ${offset}: ${sorted.length} total, ${inRange.length} within ${formatDate(fromDate)} - ${formatDate(toDate)}`,
     );
+    stats.itemsInRange += inRange.length;
 
     if (!inRange.length) {
       const allBeforeRange = sorted.every((item) => item.date < fromDate);
-      if (allBeforeRange && sawInRange) {
-        console.log('[scraper] Remaining events are before the target range. Stopping.');
+      const allAfterRange = sorted.every((item) => item.date > toDate);
+
+      if (allAfterRange) {
+        console.log(`[scraper] Page ${offset} contains only entries after ${formatDate(toDate)}. Stopping.`);
+        done = true;
+        nextCursor = null;
         break;
       }
+
+      if (allBeforeRange && sawInRange) {
+        console.log('[scraper] Remaining events are before the target range. Stopping.');
+        done = true;
+        nextCursor = null;
+        break;
+      }
+
       offset += 1;
+      nextCursor = offset;
       await sleep(PAGE_DELAY_MS);
       continue;
     }
 
     sawInRange = true;
-    stats.itemsInRange += inRange.length;
 
     for (const item of inRange) {
+      if (Date.now() - startTime >= effectiveBudget) {
+        timeExceeded = true;
+        nextCursor = offset;
+        break;
+      }
+
+      stats.seen += 1;
+
       let detail = null;
       if (item.detailHref && (!item.name || !item.city || !(item.distances && item.distances.length))) {
         try {
@@ -591,29 +668,17 @@ export async function run({ from = FROM, to = TO, maxPages = MAX_PAGES } = {}) {
       }
 
       try {
-        const { data: existingEvent, error: existingEventError } = await supabase
-          .from('events')
-          .select('id')
-          .ilike('name', item.name)
-          .ilike('city', item.city)
-          .limit(1);
-
-        if (existingEventError) {
-          throw existingEventError;
-        }
-
-        let eventId;
-        if (existingEvent?.length) {
-          eventId = existingEvent[0].id;
-          stats.eventsMatched += 1;
-        } else {
-          eventId = await upsertEvent({ name: item.name, city: item.city });
+        const { id: eventId, created } = await upsertEvent({ name: item.name, city: item.city });
+        if (created) {
           stats.eventsCreated += 1;
+        } else {
+          stats.eventsMatched += 1;
         }
 
         const editionResult = await upsertEdition(eventId, item.date, item.distances);
         if (editionResult.action === 'inserted') {
           stats.editionsInserted += 1;
+          stats.inserted += 1;
         } else if (editionResult.action === 'updated') {
           stats.editionsUpdated += 1;
         } else {
@@ -630,12 +695,145 @@ export async function run({ from = FROM, to = TO, maxPages = MAX_PAGES } = {}) {
       }
     }
 
+    if (timeExceeded) {
+      break;
+    }
+
+    const hasAfterRange = sorted.some((item) => item.date > toDate);
+    if (hasAfterRange) {
+      console.log(`[scraper] Page ${offset} contains entries after ${formatDate(toDate)}. Stopping.`);
+      done = true;
+      nextCursor = null;
+      break;
+    }
+
     offset += 1;
+    nextCursor = offset;
     await sleep(PAGE_DELAY_MS);
   }
 
-  console.log('[scraper] Summary:', JSON.stringify(stats, null, 2));
-  return stats;
+  if (!timeExceeded && !done && offset >= MAX_PAGES) {
+    done = true;
+    nextCursor = null;
+  }
+
+  const elapsedMs = Date.now() - startTime;
+  const summary = {
+    from: formatDate(fromDate),
+    to: formatDate(toDate),
+    cursorStart: Number.isNaN(initialCursor) || initialCursor < 0 ? 0 : initialCursor,
+    cursorEnd: done ? null : nextCursor,
+    seen: stats.seen,
+    inserted: stats.inserted,
+    eventsCreated: stats.eventsCreated,
+    eventsMatched: stats.eventsMatched,
+    editionsInserted: stats.editionsInserted,
+    editionsUpdated: stats.editionsUpdated,
+    editionsSkipped: stats.editionsSkipped,
+    skippedMissingName: stats.skippedMissingName,
+    skippedMissingCity: stats.skippedMissingCity,
+    pagesFetched: stats.pagesFetched,
+    pagesWithoutResults: stats.pagesWithoutResults,
+    itemsFound: stats.itemsFound,
+    itemsInRange: stats.itemsInRange,
+    timeBudgetMs: effectiveBudget,
+    timeElapsedMs: elapsedMs,
+    timeExceeded,
+    done,
+  };
+
+  console.log('[scraper] Chunk summary:', JSON.stringify(summary, null, 2));
+
+  return {
+    seen: stats.seen,
+    inserted: stats.inserted,
+    cursor: done ? null : nextCursor,
+    done: Boolean(done),
+    stats: summary,
+  };
+}
+
+export async function run({ from = FROM, to = TO } = {}) {
+  const fromDate = new Date(from);
+  const toDate = new Date(to);
+  if (Number.isNaN(fromDate.getTime()) || Number.isNaN(toDate.getTime())) {
+    throw new Error('Invalid `from` or `to` date. Expected format YYYY-MM-DD.');
+  }
+
+  let cursor = 0;
+  let done = false;
+  const aggregated = {
+    iterations: 0,
+    seen: 0,
+    inserted: 0,
+    eventsCreated: 0,
+    eventsMatched: 0,
+    editionsInserted: 0,
+    editionsUpdated: 0,
+    editionsSkipped: 0,
+    skippedMissingName: 0,
+    skippedMissingCity: 0,
+    pagesFetched: 0,
+    pagesWithoutResults: 0,
+    itemsFound: 0,
+    itemsInRange: 0,
+  };
+
+  while (!done && cursor < MAX_PAGES) {
+    const chunk = await runScraperChunk({
+      from: formatDate(fromDate),
+      to: formatDate(toDate),
+      cursor,
+      timeBudgetMs: Number.MAX_SAFE_INTEGER,
+    });
+
+    aggregated.iterations += 1;
+    aggregated.seen += chunk.seen;
+    aggregated.inserted += chunk.inserted;
+
+    if (chunk.stats) {
+      aggregated.eventsCreated += chunk.stats.eventsCreated || 0;
+      aggregated.eventsMatched += chunk.stats.eventsMatched || 0;
+      aggregated.editionsInserted += chunk.stats.editionsInserted || 0;
+      aggregated.editionsUpdated += chunk.stats.editionsUpdated || 0;
+      aggregated.editionsSkipped += chunk.stats.editionsSkipped || 0;
+      aggregated.skippedMissingName += chunk.stats.skippedMissingName || 0;
+      aggregated.skippedMissingCity += chunk.stats.skippedMissingCity || 0;
+      aggregated.pagesFetched += chunk.stats.pagesFetched || 0;
+      aggregated.pagesWithoutResults += chunk.stats.pagesWithoutResults || 0;
+      aggregated.itemsFound += chunk.stats.itemsFound || 0;
+      aggregated.itemsInRange += chunk.stats.itemsInRange || 0;
+    }
+
+    if (chunk.done || chunk.cursor === null) {
+      done = true;
+    } else {
+      cursor = chunk.cursor;
+    }
+  }
+
+  const summary = {
+    from: formatDate(fromDate),
+    to: formatDate(toDate),
+    seen: aggregated.seen,
+    inserted: aggregated.inserted,
+    iterations: aggregated.iterations,
+    eventsCreated: aggregated.eventsCreated,
+    eventsMatched: aggregated.eventsMatched,
+    editionsInserted: aggregated.editionsInserted,
+    editionsUpdated: aggregated.editionsUpdated,
+    editionsSkipped: aggregated.editionsSkipped,
+    skippedMissingName: aggregated.skippedMissingName,
+    skippedMissingCity: aggregated.skippedMissingCity,
+    pagesFetched: aggregated.pagesFetched,
+    pagesWithoutResults: aggregated.pagesWithoutResults,
+    itemsFound: aggregated.itemsFound,
+    itemsInRange: aggregated.itemsInRange,
+  };
+
+  console.log('[scraper] Run summary:', JSON.stringify(summary, null, 2));
+
+  return summary;
 }
 
 const isDirectRun = fileURLToPath(import.meta.url) === process.argv[1];

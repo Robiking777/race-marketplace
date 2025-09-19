@@ -46,12 +46,34 @@ Skrypt `scripts/scrape-maratonypolskie.js` pobiera wydarzenia biegowe z kalendar
 1. Skonfiguruj zmienne środowiskowe (lokalnie w `.env.local` lub na Vercel w **Project → Settings → Environment Variables**):
    - `SUPABASE_URL`
    - `SUPABASE_SERVICE_ROLE`
+   - `SCRAPER_SECRET` – wymagany przy wywoływaniu endpointu HTTP `/api/run-scraper`.
 2. Zainstaluj zależności: `npm install`.
 3. Uruchom scraper: `npm run scrape:mp`.
 
 Skrypt wysyła żądania co ok. 800 ms z nagłówkiem `User-Agent: RaceMarketplaceBot/1.0 (contact: admin@racemarketplace.pl)` i
 wykonuje idempotentne upserty – wielokrotne uruchomienie nie duplikuje danych. W logach znajdziesz liczbę przetworzonych
 stron, wpisów oraz statystyki upsertów.
+
+### Endpoint `/api/run-scraper`
+
+Po wdrożeniu na Vercel możesz uruchamiać scraper w krótkich turach poprzez endpoint `/api/run-scraper`. Endpoint jest
+chroniony parametrem `key=<SCRAPER_SECRET>` i przyjmuje następujące parametry zapytania (GET/POST):
+
+- `from=YYYY-MM-DD`
+- `to=YYYY-MM-DD`
+- `cursor=<int>` (opcjonalnie – numer strony, od której kontynuujemy)
+- `budgetMs=<int>` (opcjonalnie – budżet czasowy w milisekundach, domyślnie 45000)
+
+Przykład jednego wywołania:
+
+```
+/api/run-scraper?from=2025-10-01&to=2025-10-31&key=TWÓJ_SEKRET
+```
+
+Odpowiedź zawiera liczbę przetworzonych wpisów (`seen`), liczbę dodanych edycji (`inserted`) oraz informacje o tym, czy
+zakres został ukończony (`done`). Jeśli `done` jest `false`, a pole `cursor` ma wartość np. `3`, kontynuuj okno dodając do
+zapytania `&cursor=3`. Możesz także dostosować budżet czasu np. `&budgetMs=30000`. Wywołuj scraper miesiąc po miesiącu,
+aby zmieścić się w limicie 60 s funkcji serverless (np. październik 2025, listopad 2025, grudzień 2025 itd.).
 
 ### Scraper – kolizje slugów
 
@@ -65,5 +87,6 @@ stron, wpisów oraz statystyki upsertów.
 ### Integracja z Vercel Cron (opcjonalnie)
 
 Repozytorium zawiera plik `vercel.json` oraz endpoint `api/run-scraper.js`. Po wdrożeniu na Vercel cron raz w tygodniu
-(poniedziałek, godz. 03:00 UTC) wywoła `GET /api/run-scraper`, który uruchamia ten sam skrypt. W razie potrzeby możesz
-zmienić harmonogram lub wywołać endpoint ręcznie (np. `POST /api/run-scraper`).
+(poniedziałek, godz. 03:00 UTC) wywoła `GET /api/run-scraper` (pamiętaj o ustawieniu `SCRAPER_SECRET`). W razie potrzeby
+możesz zmienić harmonogram lub wywołać endpoint ręcznie (np. `POST /api/run-scraper`) – pamiętaj o podaniu parametrów
+`from`, `to`, `key`, a w razie potrzeby także `cursor`/`budgetMs`.
