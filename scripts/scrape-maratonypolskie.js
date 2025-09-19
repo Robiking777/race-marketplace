@@ -134,6 +134,34 @@ function resolveUrl(href) {
   }
 }
 
+async function makeUniqueSlug(name, city) {
+  const base = slugify(name, { lower: true, strict: true });
+  const c = city ? slugify(city, { lower: true, strict: true }) : '';
+  let cand = c ? `${base}-${c}` : base;
+  let i = 2;
+
+  while (true) {
+    const { data, error } = await supabase
+      .from('events')
+      .select('id')
+      .eq('slug', cand)
+      .maybeSingle();
+
+    if (error && error.code !== 'PGRST116') {
+      throw error;
+    }
+
+    if (!data) {
+      return cand;
+    }
+
+    const next = c ? `${base}-${c}-${i}` : `${base}-${i}`;
+    console.log(`[scraper] slug collision for ${cand} -> using ${next}`);
+    cand = next;
+    i += 1;
+  }
+}
+
 function partsAfterDate(rowText, dateText) {
   if (!rowText || !dateText) return [];
   const startIndex = rowText.indexOf(dateText);
@@ -358,40 +386,44 @@ async function collectItems(offset) {
 }
 
 async function upsertEvent({ name, city }) {
-  const { data: existing, error: selectError } = await supabase
+  const { data: exByNC, error: existingError } = await supabase
     .from('events')
     .select('id')
-    .eq('name', name)
-    .eq('city', city)
-    .limit(1)
-    .maybeSingle();
+    .ilike('name', name)
+    .ilike('city', city)
+    .limit(1);
 
-  if (selectError && selectError.code !== 'PGRST116') {
-    throw selectError;
+  if (existingError) {
+    throw existingError;
   }
 
-  if (existing && existing.id) {
-    return { id: existing.id, created: false };
+  if (exByNC?.length) return exByNC[0].id;
+
+  while (true) {
+    const slug = await makeUniqueSlug(name, city);
+    const ins = await supabase
+      .from('events')
+      .insert({
+        name,
+        slug,
+        city,
+        country_code: 'PL',
+        sport_type: 'running',
+      })
+      .select('id')
+      .single();
+
+    if (!ins.error) {
+      return ins.data.id;
+    }
+
+    if (ins.error.code === '23505') {
+      console.log(`[scraper] slug collision during insert -> retrying`);
+      continue;
+    }
+
+    throw ins.error;
   }
-
-  const slug = slugify(name, { lower: true, strict: true });
-  const { data, error } = await supabase
-    .from('events')
-    .insert({
-      name,
-      city,
-      slug,
-      country_code: 'PL',
-      sport_type: 'running',
-    })
-    .select('id')
-    .single();
-
-  if (error) {
-    throw error;
-  }
-
-  return { id: data.id, created: true };
 }
 
 async function upsertEdition(eventId, date, distances) {
@@ -559,13 +591,27 @@ export async function run({ from = FROM, to = TO, maxPages = MAX_PAGES } = {}) {
       }
 
       try {
-        const eventResult = await upsertEvent({ name: item.name, city: item.city });
-        if (eventResult.created) {
-          stats.eventsCreated += 1;
-        } else {
-          stats.eventsMatched += 1;
+        const { data: existingEvent, error: existingEventError } = await supabase
+          .from('events')
+          .select('id')
+          .ilike('name', item.name)
+          .ilike('city', item.city)
+          .limit(1);
+
+        if (existingEventError) {
+          throw existingEventError;
         }
-        const editionResult = await upsertEdition(eventResult.id, item.date, item.distances);
+
+        let eventId;
+        if (existingEvent?.length) {
+          eventId = existingEvent[0].id;
+          stats.eventsMatched += 1;
+        } else {
+          eventId = await upsertEvent({ name: item.name, city: item.city });
+          stats.eventsCreated += 1;
+        }
+
+        const editionResult = await upsertEdition(eventId, item.date, item.distances);
         if (editionResult.action === 'inserted') {
           stats.editionsInserted += 1;
         } else if (editionResult.action === 'updated') {
