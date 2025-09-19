@@ -201,6 +201,44 @@ function distanceBand(km) {
   return null;
 }
 
+function formatKilometersLabel(km) {
+  if (!Number.isFinite(km)) return "";
+  const absKm = Math.abs(km);
+  const hasFraction = Math.abs(km - Math.round(km)) > 1e-3;
+  const formatted = km.toLocaleString("pl-PL", {
+    minimumFractionDigits: hasFraction ? 1 : 0,
+    maximumFractionDigits: hasFraction ? 2 : 0,
+  });
+  if (hasFraction) {
+    return `${formatted} kilometra`;
+  }
+  const rounded = Math.round(absKm);
+  const lastTwo = rounded % 100;
+  if (lastTwo >= 12 && lastTwo <= 14) {
+    return `${formatted} kilometrów`;
+  }
+  const lastDigit = rounded % 10;
+  if (lastDigit === 1) return `${formatted} kilometr`;
+  if (lastDigit >= 2 && lastDigit <= 4) return `${formatted} kilometry`;
+  return `${formatted} kilometrów`;
+}
+
+function distanceTagLabel(distanceValue, km, band) {
+  const normalized = typeof distanceValue === "string" ? distanceValue.trim() : "";
+  if (band?.key === "half") return "Półmaraton";
+  if (band?.key === "marathon") return "Maraton";
+  if (normalized) return normalized;
+  if (Number.isFinite(km)) return formatKilometersLabel(km);
+  return band?.label ?? "";
+}
+
+function distanceTagTitle(distanceValue, km, band) {
+  const normalized = typeof distanceValue === "string" ? distanceValue.trim() : "";
+  if (normalized) return normalized;
+  if (Number.isFinite(km)) return formatKilometersLabel(km);
+  return band?.label ?? "";
+}
+
 function formatEditionMeta(item) {
   if (!item) return "";
   const locationParts = [item.city, item.country_code].filter(Boolean);
@@ -1551,9 +1589,13 @@ function AlertsList({ alerts, loading, onToggle, onDelete, onEdit, emailOptIn })
 /** @param {{ listing: Listing, onDelete: (id:string)=>void, onOpen: (listing: Listing)=>void, onMessage: (listing: Listing)=>void, currentUserId?: string, onEdit?: (listing: Listing)=>void }} props */
 function ListingCard({ listing, onDelete, onOpen, onMessage, currentUserId, onEdit }) {
   const isSell = listing.type === "sell";
-  const distanceLabel = (listing.distance || inferDistance(listing.raceName) || "").trim();
-  const kmValue = Number.isFinite(listing.distanceKm) ? listing.distanceKm : parseDistanceToKm(distanceLabel || listing.distance);
+  const distanceText = (listing.distance || inferDistance(listing.raceName) || "").trim();
+  const kmValue = Number.isFinite(listing.distanceKm)
+    ? listing.distanceKm
+    : parseDistanceToKm(distanceText || listing.distance);
   const band = distanceBand(kmValue);
+  const tagLabel = band ? distanceTagLabel(distanceText, kmValue, band) : "";
+  const tagTitle = band ? distanceTagTitle(distanceText, kmValue, band) : "";
   const ownerId = getListingOwnerId(listing);
   const canMessage = !!ownerId && ownerId !== currentUserId;
   const canManage = !!currentUserId && !!ownerId && ownerId === currentUserId;
@@ -1580,9 +1622,9 @@ function ListingCard({ listing, onDelete, onOpen, onMessage, currentUserId, onEd
         <div className="absolute top-3 right-3">
           <span
             className={`px-2 py-1 rounded-full text-xs font-medium ${band.cls}`}
-            title={distanceLabel || band.label}
+            title={tagTitle || undefined}
           >
-            {band.label}
+            {tagLabel}
           </span>
         </div>
       )}
@@ -1597,9 +1639,6 @@ function ListingCard({ listing, onDelete, onOpen, onMessage, currentUserId, onEd
           )}
         </div>
         <div className="text-right">
-          {!isSell && (
-            <div className="text-xs text-gray-500 leading-tight">Proponowana cena zakupu</div>
-          )}
           <div className="font-semibold">{toPLN(listing.price)}</div>
         </div>
       </div>
@@ -1694,9 +1733,14 @@ function DetailModal({ listing, onClose, onMessage, currentUserId }) {
   const maskedBib = listing.bib ? maskBib(listing.bib) : "";
   const proofUrl = listing.proof_source_url || "";
   const showProof = isSell && (listing.bib || (listing.proof_status && listing.proof_status !== "none"));
-  const distanceLabel = (listing.distance || inferDistance(listing.raceName) || "").trim();
-  const kmValue = Number.isFinite(listing.distanceKm) ? listing.distanceKm : parseDistanceToKm(distanceLabel || listing.distance);
+  const distanceText = (listing.distance || inferDistance(listing.raceName) || "").trim();
+  const kmValue = Number.isFinite(listing.distanceKm)
+    ? listing.distanceKm
+    : parseDistanceToKm(distanceText || listing.distance);
   const band = distanceBand(kmValue);
+  const tagLabel = band ? distanceTagLabel(distanceText, kmValue, band) : "";
+  const tagTitle = band ? distanceTagTitle(distanceText, kmValue, band) : "";
+  const distanceDisplay = distanceTagTitle(distanceText, kmValue, band);
   let listingProofCheckedLabel = "";
   if (listing.proof_checked_at) {
     const parsed = new Date(listing.proof_checked_at);
@@ -1709,8 +1753,8 @@ function DetailModal({ listing, onClose, onMessage, currentUserId }) {
       <div className="relative bg-white rounded-2xl w-[min(92vw,700px)] p-5 shadow-xl" onClick={(e) => e.stopPropagation()}>
         {band && (
           <div className="absolute top-3 right-3">
-            <span className={`px-2 py-1 rounded-full text-xs font-medium ${band.cls}`} title={distanceLabel || band.label}>
-              {band.label}
+            <span className={`px-2 py-1 rounded-full text-xs font-medium ${band.cls}`} title={tagTitle || undefined}>
+              {tagLabel}
             </span>
           </div>
         )}
@@ -1726,7 +1770,6 @@ function DetailModal({ listing, onClose, onMessage, currentUserId }) {
           </button>
         </div>
         <div className="mb-3">
-          {!isSell && <div className="text-xs text-gray-500 leading-tight">Proponowana cena zakupu</div>}
           <div className="text-2xl font-semibold">{toPLN(listing.price)}</div>
         </div>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm text-gray-700 mb-3">
@@ -1740,10 +1783,10 @@ function DetailModal({ listing, onClose, onMessage, currentUserId }) {
             <div className="text-gray-500">Lokalizacja</div>
             <div>{listing.location || "—"}</div>
           </div>
-          {(listing.distance || distanceLabel) && (
+          {distanceDisplay && (
             <div>
               <div className="text-gray-500">Dystans</div>
-              <div>{listing.distance || distanceLabel}</div>
+              <div>{distanceDisplay}</div>
             </div>
           )}
           <div>
