@@ -678,6 +678,13 @@ function ListingForm({ onAdd, ownerId, authorDisplayName, editingListing = null,
     return [trimmedPrimary, ...filtered];
   }
 
+  function applyDistances(list, primary) {
+    const arranged = arrangeDistances(list, primary);
+    setDistancesList(arranged);
+    setDistance(arranged[0] || "");
+    return arranged;
+  }
+
   function handleSelectEdition(item) {
     setSelectedEdition(item);
     setRaceName(item.event_name || "");
@@ -688,16 +695,15 @@ function ListingForm({ onAdd, ownerId, authorDisplayName, editingListing = null,
     if (Array.isArray(item.distances) && item.distances.length) {
       const normalized = sanitizeDistances(item.distances);
       if (normalized.length) {
-        const currentLower = distance.trim().toLowerCase();
-        const includesCurrent = currentLower
+        const trimmedCurrent = distance.trim();
+        const currentLower = trimmedCurrent.toLowerCase();
+        const includesCurrent = trimmedCurrent
           ? normalized.some((value) => value.toLowerCase() === currentLower)
           : false;
         const recognized = normalized.find((value) => DISTANCES.includes(value));
-        const primary = recognized || (includesCurrent ? distance : "");
-        setDistancesList(primary ? arrangeDistances(normalized, primary) : normalized);
-        if (recognized) {
-          setDistance(recognized);
-        }
+        const primary =
+          recognized || (includesCurrent ? trimmedCurrent : normalized[0] || trimmedCurrent);
+        applyDistances(normalized, primary);
       }
     }
   }
@@ -752,8 +758,7 @@ function ListingForm({ onAdd, ownerId, authorDisplayName, editingListing = null,
         : []
     );
     const primaryDistance = editingListing.distance || normalizedDistances[0] || "";
-    setDistancesList(primaryDistance ? arrangeDistances(normalizedDistances, primaryDistance) : normalizedDistances);
-    setDistance(primaryDistance || "");
+    applyDistances(normalizedDistances, primaryDistance);
     setDistanceInput("");
     setPrice(
       typeof editingListing.price === "number"
@@ -803,8 +808,7 @@ function ListingForm({ onAdd, ownerId, authorDisplayName, editingListing = null,
   function validate() {
     if (!raceName.trim()) return "Podaj nazwę biegu.";
     const normalized = sanitizeDistances(distancesList);
-    const hasAnyDistance = (distance && distance.trim()) || normalized.length > 0;
-    if (!hasAnyDistance) return "Dodaj co najmniej jeden dystans biegu.";
+    if (!normalized.length) return "Dodaj co najmniej jeden dystans biegu.";
     if (!price || isNaN(Number(price)) || Number(price) <= 0) return "Podaj poprawną kwotę.";
     if (transferFee.trim()) {
       const parsedFee = Number(transferFee);
@@ -913,14 +917,14 @@ function ListingForm({ onAdd, ownerId, authorDisplayName, editingListing = null,
       createdAt,
     };
     const trimmedPrimary = distance.trim();
-    const normalizedExtras = sanitizeDistances(distancesList);
-    const primaryLower = trimmedPrimary.toLowerCase();
-    let distancesArray = trimmedPrimary
-      ? [
-          trimmedPrimary,
-          ...normalizedExtras.filter((value) => value.toLowerCase() !== primaryLower),
-        ]
-      : normalizedExtras;
+    let normalizedList = sanitizeDistances(distancesList);
+    if (trimmedPrimary) {
+      normalizedList = [trimmedPrimary, ...normalizedList];
+    }
+    let distancesArray = arrangeDistances(
+      normalizedList,
+      trimmedPrimary || normalizedList[0] || ""
+    );
     if (!distancesArray.length && trimmedPrimary) {
       distancesArray = [trimmedPrimary];
     }
@@ -1002,29 +1006,30 @@ function ListingForm({ onAdd, ownerId, authorDisplayName, editingListing = null,
     const value = distanceInput.trim();
     if (!value) return;
     const lower = value.toLowerCase();
-    setDistancesList((prev) => {
-      const normalized = sanitizeDistances(prev);
-      if (normalized.some((item) => item.toLowerCase() === lower)) {
-        return arrangeDistances(normalized, distance || value);
-      }
-      return arrangeDistances([...normalized, value], distance || value);
-    });
-    if (!distance.trim()) {
-      setDistance(value);
-    }
+    const normalized = sanitizeDistances(distancesList);
+    const exists = normalized.some((item) => item.toLowerCase() === lower);
+    const baseList = exists ? normalized : [...normalized, value];
+    const primaryCandidate = distance.trim() || value;
+    applyDistances(baseList, primaryCandidate);
     setDistanceInput("");
   }
 
   function handleRemoveDistance(value) {
     const lower = value.toLowerCase();
-    setDistancesList((prev) => {
-      const normalized = sanitizeDistances(prev);
-      const next = normalized.filter((item) => item.toLowerCase() !== lower);
-      if (distance && distance.toLowerCase() === lower) {
-        setDistance(next[0] || "");
-      }
-      return next;
-    });
+    const normalized = sanitizeDistances(distancesList);
+    const next = normalized.filter((item) => item.toLowerCase() !== lower);
+    const currentPrimary = distance.trim();
+    const nextPrimary =
+      currentPrimary && currentPrimary.toLowerCase() !== lower ? currentPrimary : next[0] || "";
+    applyDistances(next, nextPrimary);
+  }
+
+  function handleMakePrimary(value) {
+    if (!value) return;
+    const trimmed = value.trim();
+    if (!trimmed) return;
+    if (distance.trim().toLowerCase() === trimmed.toLowerCase()) return;
+    applyDistances(distancesList, trimmed);
   }
 
   const editionForMeta = selectedEdition ||
@@ -1149,81 +1154,85 @@ function ListingForm({ onAdd, ownerId, authorDisplayName, editingListing = null,
       </div>
 
       <Field label="Dystans" required>
-        <select
-          value={distance}
-          onChange={(e) => {
-            const value = e.target.value;
-            setDistance(value);
-            setDistancesList((prev) => arrangeDistances(prev, value));
-          }}
-          className="w-full px-3 py-2 rounded-xl border focus:outline-none focus:ring"
-          required
-        >
-          <option value="" disabled>
-            Wybierz dystans…
-          </option>
-          {DISTANCES.map((d) => (
-            <option key={d} value={d}>
-              {d}
-            </option>
-          ))}
-          {!DISTANCES.includes(distance) && distance ? (
-            <option value={distance} hidden>
-              {distance}
-            </option>
-          ) : null}
-        </select>
-      </Field>
-
-      <Field label="Dodatkowe dystanse">
-        <div className="flex flex-wrap gap-2">
-          <input
-            list="distance-suggestions"
-            value={distanceInput}
-            onChange={(e) => setDistanceInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                e.preventDefault();
-                handleAddDistance();
-              }
-            }}
-            className="flex-1 min-w-[140px] px-3 py-2 rounded-xl border focus:outline-none focus:ring"
-            placeholder="np. 5 km"
-          />
-          <button
-            type="button"
-            onClick={handleAddDistance}
-            disabled={!distanceInput.trim()}
-            className="px-3 py-2 rounded-xl border bg-white hover:bg-neutral-50 disabled:opacity-50"
-          >
-            Dodaj
-          </button>
-          <datalist id="distance-suggestions">
-            {DISTANCE_SUGGESTIONS.map((item) => (
-              <option key={item} value={item} />
-            ))}
-          </datalist>
-        </div>
-        {distancesList.length > 0 && (
-          <div className="flex flex-wrap gap-2 mt-2">
-            {distancesList.map((value) => (
-              <span
+        <div className="flex flex-wrap items-center gap-2">
+          {distancesList.length === 0 && (
+            <span className="text-sm text-gray-500">Dodaj co najmniej jeden dystans.</span>
+          )}
+          {distancesList.map((value, index) => {
+            const isPrimary = index === 0;
+            return (
+              <div
                 key={value}
-                className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-neutral-200 text-sm text-neutral-700"
+                className={clsx(
+                  "inline-flex items-center gap-1 rounded-full px-2 py-1 text-sm",
+                  isPrimary ? "bg-neutral-900 text-white" : "bg-neutral-200 text-neutral-700"
+                )}
               >
-                <span>{value}</span>
+                <button
+                  type="button"
+                  onClick={() => handleMakePrimary(value)}
+                  className={clsx(
+                    "inline-flex items-center gap-1 focus:outline-none",
+                    isPrimary ? "cursor-default" : "hover:text-neutral-900"
+                  )}
+                  title={isPrimary ? "Główny dystans" : "Ustaw jako główny dystans"}
+                >
+                  <span>{value}</span>
+                  <span
+                    className={clsx(
+                      "text-[10px] font-semibold uppercase tracking-wide",
+                      isPrimary ? "bg-white/20 text-white px-1 py-0.5 rounded" : "text-neutral-500"
+                    )}
+                  >
+                    {isPrimary ? "Główny" : "Ustaw"}
+                  </span>
+                </button>
                 <button
                   type="button"
                   onClick={() => handleRemoveDistance(value)}
-                  className="leading-none text-neutral-500 hover:text-neutral-700"
+                  className={clsx(
+                    "leading-none focus:outline-none",
+                    isPrimary ? "text-white/80 hover:text-white" : "text-neutral-500 hover:text-neutral-700"
+                  )}
                   aria-label={`Usuń dystans ${value}`}
                 >
                   ×
                 </button>
-              </span>
-            ))}
+              </div>
+            );
+          })}
+          <div className="flex flex-wrap items-center gap-2">
+            <input
+              list="distance-suggestions"
+              value={distanceInput}
+              onChange={(e) => setDistanceInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  handleAddDistance();
+                }
+              }}
+              className="min-w-[140px] flex-1 px-3 py-2 rounded-xl border focus:outline-none focus:ring"
+              placeholder="np. 5 km"
+            />
+            <button
+              type="button"
+              onClick={handleAddDistance}
+              disabled={!distanceInput.trim()}
+              className="px-3 py-2 rounded-xl border bg-white hover:bg-neutral-50 disabled:opacity-50"
+            >
+              Dodaj
+            </button>
+            <datalist id="distance-suggestions">
+              {DISTANCE_SUGGESTIONS.map((item) => (
+                <option key={item} value={item} />
+              ))}
+            </datalist>
           </div>
-        )}
+        </div>
+        <p className="mt-2 text-xs text-gray-500">
+          Enter lub „Dodaj” dopisuje dystans. Kliknij odznakę, aby ustawić ją jako główną.
+        </p>
       </Field>
 
       <Field label={type === "sell" ? "Cena (PLN)" : "Budżet / proponowana kwota (PLN)"} required>
