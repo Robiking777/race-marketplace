@@ -38,15 +38,19 @@ Wymagane zmienne środowiskowe (Vercel):
 - Build: `npm run build`
 - Preview: `npm run preview`
 
-## Jak uruchomić scraper kalendarza biegów
+## Scraper
 
 Skrypt `scripts/scrape-maratonypolskie.js` pobiera wydarzenia biegowe z kalendarza Maratonypolskie.pl w zakresie od
 1.10.2025 do 31.12.2026 i uzupełnia tabele `events` oraz `event_editions` w Supabase.
 
-1. Skonfiguruj zmienne środowiskowe (lokalnie w `.env.local` lub na Vercel w **Project → Settings → Environment Variables**):
-   - `SUPABASE_URL`
-   - `SUPABASE_SERVICE_ROLE`
-   - `SCRAPER_SECRET` – wymagany przy wywoływaniu endpointu HTTP `/api/run-scraper`.
+Wymagane zmienne środowiskowe (Vercel):
+
+- `SUPABASE_URL` (Project URL)
+- `SUPABASE_SERVICE_ROLE` (Service role key)
+- `SCRAPER_SECRET` (dowolny długi sekret)
+
+Konfiguracja lokalna/Vercel:
+1. Skonfiguruj zmienne środowiskowe (lokalnie w `.env.local` lub na Vercel w **Project → Settings → Environment Variables**).
 2. Zainstaluj zależności: `npm install`.
 3. Uruchom scraper: `npm run scrape:mp`.
 
@@ -64,10 +68,11 @@ chroniony parametrem `key=<SCRAPER_SECRET>` i przyjmuje następujące parametry 
 - `cursor=<int>` (opcjonalnie – numer strony, od której kontynuujemy)
 - `budgetMs=<int>` (opcjonalnie – budżet czasowy w milisekundach, domyślnie 45000)
 
-Przykład jednego wywołania:
+Wywołuj scraper oknami miesiąc-po-miesiącu, przekazując kursory do kontynuacji:
 
 ```
-/api/run-scraper?from=2025-10-01&to=2025-10-31&key=TWÓJ_SEKRET
+/api/run-scraper?from=2025-10-01&to=2025-10-31&key=SEKRET
+/api/run-scraper?from=2025-10-01&to=2025-10-31&key=SEKRET&cursor=3
 ```
 
 Odpowiedź zawiera liczbę przetworzonych wpisów (`seen`), liczbę dodanych edycji (`inserted`) oraz informacje o tym, czy

@@ -2,8 +2,6 @@ import fetch from 'node-fetch';
 import * as cheerio from 'cheerio';
 import slugify from 'slugify';
 import { createClient } from '@supabase/supabase-js';
-import { fileURLToPath } from 'url';
-
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE;
 
@@ -23,8 +21,8 @@ const HEADERS = {
   'Accept-Language': 'pl,en;q=0.8',
 };
 
-const FROM = new Date('2025-10-01T00:00:00Z');
-const TO = new Date('2026-12-31T23:59:59Z');
+const DEFAULT_FROM = '2025-10-01';
+const DEFAULT_TO = '2026-12-31';
 const PAGE_DELAY_MS = 800;
 const DETAIL_DELAY_MS = 800;
 const MAX_PAGES = 400;
@@ -134,18 +132,17 @@ function resolveUrl(href) {
   }
 }
 
-async function makeUniqueSlug(name, city) {
-  const nameSlug = slugify(name, { lower: true, strict: true });
-  const citySlug = city ? slugify(city, { lower: true, strict: true }) : null;
-  const base = citySlug ? `${nameSlug}-${citySlug}` : nameSlug;
-  let cand = base;
-  let i = 2;
+async function makeUniqueSlug(sb, name, city) {
+  const base = slugify(name, { lower: true, strict: true });
+  const citySlug = city ? slugify(city, { lower: true, strict: true }) : '';
+  let candidate = citySlug ? `${base}-${citySlug}` : base;
+  let suffix = 2;
 
   while (true) {
-    const { data, error } = await supabase
+    const { data, error } = await sb
       .from('events')
       .select('id')
-      .eq('slug', cand)
+      .eq('slug', candidate)
       .maybeSingle();
 
     if (error && error.code !== 'PGRST116') {
@@ -153,36 +150,38 @@ async function makeUniqueSlug(name, city) {
     }
 
     if (!data) {
-      return cand;
+      return candidate;
     }
 
-    const next = `${base}-${i}`;
-    console.log(`[scraper] slug collision for ${cand} -> using ${next}`);
-    cand = next;
-    i += 1;
+    const nextCandidate = citySlug
+      ? `${base}-${citySlug}-${suffix}`
+      : `${base}-${suffix}`;
+    console.log(`[scraper] slug collision for ${candidate} -> using ${nextCandidate}`);
+    candidate = nextCandidate;
+    suffix += 1;
   }
 }
 
 async function findEventByNameCity(name, city) {
-  const query = supabase.from('events').select('id').limit(1);
+  let query = supabase.from('events').select('id');
 
   if (name) {
-    query.ilike('name', name);
+    query = query.ilike('name', name);
   }
 
   if (city) {
-    query.ilike('city', city);
+    query = query.ilike('city', city);
   } else {
-    query.is('city', null);
+    query = query.is('city', null);
   }
 
-  const { data, error } = await query;
+  const { data, error } = await query.limit(1).maybeSingle();
 
-  if (error) {
+  if (error && error.code !== 'PGRST116') {
     throw error;
   }
 
-  return data && data.length ? data[0] : null;
+  return data || null;
 }
 
 function partsAfterDate(rowText, dateText) {
@@ -416,7 +415,7 @@ async function upsertEvent({ name, city }) {
   }
 
   while (true) {
-    const slug = await makeUniqueSlug(name, city);
+    const slug = await makeUniqueSlug(supabase, name, city);
     const { data, error } = await supabase
       .from('events')
       .insert({
@@ -501,7 +500,12 @@ async function upsertEdition(eventId, date, distances) {
   return { id: data.id, action: 'inserted' };
 }
 
-export async function runScraperChunk({ from, to, cursor = 0, timeBudgetMs = 45000 } = {}) {
+async function runScraperChunkWithStats({
+  from = DEFAULT_FROM,
+  to = DEFAULT_TO,
+  cursor = 0,
+  timeBudgetMs = 45000,
+} = {}) {
   if (!from || !to) {
     throw new Error('Both `from` and `to` parameters are required.');
   }
@@ -753,7 +757,12 @@ export async function runScraperChunk({ from, to, cursor = 0, timeBudgetMs = 450
   };
 }
 
-export async function run({ from = FROM, to = TO } = {}) {
+export async function runScraperChunk(options = {}) {
+  const { stats, ...result } = await runScraperChunkWithStats(options);
+  return result;
+}
+
+export async function run({ from = DEFAULT_FROM, to = DEFAULT_TO } = {}) {
   const fromDate = new Date(from);
   const toDate = new Date(to);
   if (Number.isNaN(fromDate.getTime()) || Number.isNaN(toDate.getTime())) {
@@ -780,7 +789,7 @@ export async function run({ from = FROM, to = TO } = {}) {
   };
 
   while (!done && cursor < MAX_PAGES) {
-    const chunk = await runScraperChunk({
+    const chunk = await runScraperChunkWithStats({
       from: formatDate(fromDate),
       to: formatDate(toDate),
       cursor,
@@ -836,16 +845,3 @@ export async function run({ from = FROM, to = TO } = {}) {
   return summary;
 }
 
-const isDirectRun = fileURLToPath(import.meta.url) === process.argv[1];
-
-if (isDirectRun) {
-  run()
-    .then((stats) => {
-      console.log('[scraper] Completed successfully.');
-      return stats;
-    })
-    .catch((error) => {
-      console.error('[scraper] Execution failed:', error);
-      process.exit(1);
-    });
-}
