@@ -4,9 +4,22 @@ import { supabase } from "./lib/supabase";
 // ----------------------------- Typy -----------------------------
 /** @typedef {"sell" | "buy"} ListingType */
 
-const DISTANCES = /** @type {const} */ (["5 km", "10 km", "Półmaraton", "Maraton", "Ultramaraton"]);
+const DISTANCES = /** @type {const} */ (
+  ["5 km", "10 km", "15 km", "Półmaraton", "Maraton", "Ultramaraton", "50 km", "100 km"]
+);
 
-/** @typedef {typeof DISTANCES[number]} Distance */
+const DISTANCE_SUGGESTIONS = /** @type {const} */ ([
+  "5 km",
+  "10 km",
+  "15 km",
+  "Półmaraton",
+  "Maraton",
+  "Ultramaraton",
+  "50 km",
+  "100 km",
+]);
+
+/** @typedef {string} Distance */
 
 /**
  * @typedef {Object} Listing
@@ -16,9 +29,12 @@ const DISTANCES = /** @type {const} */ (["5 km", "10 km", "Półmaraton", "Marat
  * @property {string} [eventDate]
  * @property {string} [location]
  * @property {number} price
- * @property {string} contact
- * @property {string} [description]
- * @property {Distance} [distance]
+ * @property {string} [currency]
+  * @property {string} contact
+  * @property {string} [description]
+  * @property {Distance} [distance]
+ * @property {string[]} [distances]
+ * @property {number} [distanceKm]
  * @property {number} [edition_id]
  * @property {string} [editionEventName]
  * @property {number} [editionYear]
@@ -213,9 +229,126 @@ function inferDistance(raceName = "") {
   if (lower.includes("ultra")) return "Ultramaraton";
   if (lower.includes("pół") || lower.includes("pol") || lower.includes("half")) return "Półmaraton";
   if (lower.includes("marat") && !lower.includes("pół")) return "Maraton";
+  if (lower.includes("100")) return "100 km";
+  if (lower.includes("50")) return "50 km";
+  if (lower.includes("15")) return "15 km";
   if (lower.includes("10")) return "10 km";
   if (lower.includes("5")) return "5 km";
   return undefined;
+}
+
+function sanitizeDistances(distances) {
+  if (!Array.isArray(distances)) return [];
+  const seen = new Set();
+  const result = [];
+  for (const item of distances) {
+    if (typeof item !== "string") continue;
+    const trimmed = item.trim();
+    if (!trimmed) continue;
+    const key = trimmed.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(trimmed);
+  }
+  return result;
+}
+
+function parseDistanceToKm(value) {
+  if (!value) return NaN;
+  const str = String(value).trim().toLowerCase();
+  if (!str) return NaN;
+  if (str.includes("pół") || str.includes("pol") || str.includes("half")) return 21.0975;
+  if (str.includes("ultra") && !/\d/.test(str)) return NaN;
+  if (str.includes("marat") && !str.includes("pół") && !str.includes("half")) return 42.195;
+  const match = str.match(/(\d+(?:[\.,]\d+)?)\s*(km|kilom(?:etr(?:ów|ow|y)?|eter)?)/);
+  if (match) {
+    const numeric = Number.parseFloat(match[1].replace(",", "."));
+    return Number.isFinite(numeric) ? numeric : NaN;
+  }
+  return NaN;
+}
+
+function normalizeListing(listing) {
+  if (!listing || typeof listing !== "object") return listing;
+  const next = { ...listing };
+  let changed = false;
+
+  const inferred = inferDistance(next.raceName || "");
+  const baseDistance = typeof next.distance === "string" ? next.distance.trim() : "";
+  let distances = sanitizeDistances(next.distances);
+
+  if (!distances.length) {
+    if (baseDistance) {
+      distances = [baseDistance];
+    } else if (inferred) {
+      distances = [inferred];
+    }
+  }
+
+  if (baseDistance && (!distances.length || distances[0] !== baseDistance)) {
+    distances = [baseDistance, ...distances.filter((d) => d !== baseDistance)];
+  }
+
+  if (!distances.length && inferred) {
+    distances = [inferred];
+  }
+
+  if (!arraysShallowEqual(next.distances, distances)) {
+    next.distances = distances;
+    changed = true;
+  }
+
+  const primary = distances[0] || "";
+  if (primary) {
+    if (next.distance !== primary) {
+      next.distance = primary;
+      changed = true;
+    }
+  } else if (next.distance) {
+    delete next.distance;
+    changed = true;
+  }
+
+  const km = parseDistanceToKm(primary);
+  if (Number.isFinite(km)) {
+    if (next.distanceKm !== km) {
+      next.distanceKm = km;
+      changed = true;
+    }
+  } else if (typeof next.distanceKm === "number") {
+    delete next.distanceKm;
+    changed = true;
+  }
+
+  return changed ? next : listing;
+}
+
+function arraysShallowEqual(a, b) {
+  if (!Array.isArray(a) || !Array.isArray(b)) return Array.isArray(a) === Array.isArray(b) && (!Array.isArray(a) || a.length === 0) && (!Array.isArray(b) || b.length === 0);
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+
+function getListingDistances(listing) {
+  if (!listing || typeof listing !== "object") return [];
+  let distances = sanitizeDistances(listing.distances);
+  const trimmedPrimary = typeof listing.distance === "string" ? listing.distance.trim() : "";
+  if (trimmedPrimary) {
+    const lower = trimmedPrimary.toLowerCase();
+    if (!distances.length || (distances[0] && distances[0].toLowerCase() !== lower)) {
+      distances = [trimmedPrimary, ...distances.filter((item) => item.toLowerCase() !== lower)];
+    }
+  }
+  if (!distances.length) {
+    const inferred = inferDistance(listing.raceName || "");
+    if (inferred) {
+      distances = [inferred];
+    }
+  }
+  return distances;
 }
 
 function alertModeLabel(mode) {
@@ -272,13 +405,9 @@ function getListingOwnerId(listing) {
 function migrateListings(listings) {
   let changed = false;
   const migrated = listings.map((l) => {
-    if (l.distance) return l;
-    const inferred = inferDistance(l.raceName || "");
-    if (inferred) {
-      changed = true;
-      return { ...l, distance: inferred };
-    }
-    return l;
+    const normalized = normalizeListing(l);
+    if (normalized !== l) changed = true;
+    return normalized;
   });
   if (changed) saveListings(migrated);
   return migrated;
@@ -391,8 +520,9 @@ function demoSeed() {
       createdAt: now - 1000 * 60 * 60 * 192,
     },
   ];
-  saveListings(data);
-  return data;
+  const normalized = data.map((item) => normalizeListing(item));
+  saveListings(normalized);
+  return normalized;
 }
 
 function cryptoRandom() {
@@ -449,6 +579,8 @@ function ListingForm({ onAdd, ownerId, authorDisplayName, editingListing = null,
   const [eventDate, setEventDate] = useState("");
   const [location, setLocation] = useState("");
   const [distance, setDistance] = useState("");
+  const [distancesList, setDistancesList] = useState(/** @type {string[]} */([]));
+  const [distanceInput, setDistanceInput] = useState("");
   const [price, setPrice] = useState("");
   const [transferFee, setTransferFee] = useState("");
   const [transferFeeCurrency, setTransferFeeCurrency] = useState("PLN");
@@ -538,6 +670,22 @@ function ListingForm({ onAdd, ownerId, authorDisplayName, editingListing = null,
     }
   }, [type]);
 
+  function arrangeDistances(list, primary) {
+    const normalized = sanitizeDistances(list);
+    const trimmedPrimary = typeof primary === "string" ? primary.trim() : "";
+    if (!trimmedPrimary) return normalized;
+    const lower = trimmedPrimary.toLowerCase();
+    const filtered = normalized.filter((item) => item.toLowerCase() !== lower);
+    return [trimmedPrimary, ...filtered];
+  }
+
+  function applyDistances(list, primary) {
+    const arranged = arrangeDistances(list, primary);
+    setDistancesList(arranged);
+    setDistance(arranged[0] || "");
+    return arranged;
+  }
+
   function handleSelectEdition(item) {
     setSelectedEdition(item);
     setRaceName(item.event_name || "");
@@ -545,10 +693,18 @@ function ListingForm({ onAdd, ownerId, authorDisplayName, editingListing = null,
     setSuggestions([]);
     setShowSuggestions(false);
     setEventDate(item.start_date || "");
-    if (Array.isArray(item.distances) && item.distances.length === 1) {
-      const first = item.distances[0] || "";
-      if (DISTANCES.includes(first)) {
-        setDistance(first);
+    if (Array.isArray(item.distances) && item.distances.length) {
+      const normalized = sanitizeDistances(item.distances);
+      if (normalized.length) {
+        const trimmedCurrent = distance.trim();
+        const currentLower = trimmedCurrent.toLowerCase();
+        const includesCurrent = trimmedCurrent
+          ? normalized.some((value) => value.toLowerCase() === currentLower)
+          : false;
+        const recognized = normalized.find((value) => DISTANCES.includes(value));
+        const primary =
+          recognized || (includesCurrent ? trimmedCurrent : normalized[0] || trimmedCurrent);
+        applyDistances(normalized, primary);
       }
     }
   }
@@ -558,6 +714,8 @@ function ListingForm({ onAdd, ownerId, authorDisplayName, editingListing = null,
     setEventDate("");
     setLocation("");
     setDistance("");
+    setDistancesList([]);
+    setDistanceInput("");
     setPrice("");
     setTransferFee("");
     setTransferFeeCurrency("PLN");
@@ -593,7 +751,16 @@ function ListingForm({ onAdd, ownerId, authorDisplayName, editingListing = null,
         ""
     );
     setLocation(editingListing.location || "");
-    setDistance(editingListing.distance || "");
+    const normalizedDistances = sanitizeDistances(
+      Array.isArray(editingListing.distances) && editingListing.distances.length
+        ? editingListing.distances
+        : editingListing.distance
+        ? [editingListing.distance]
+        : []
+    );
+    const primaryDistance = editingListing.distance || normalizedDistances[0] || "";
+    applyDistances(normalizedDistances, primaryDistance);
+    setDistanceInput("");
     setPrice(
       typeof editingListing.price === "number"
         ? String(editingListing.price)
@@ -641,7 +808,8 @@ function ListingForm({ onAdd, ownerId, authorDisplayName, editingListing = null,
 
   function validate() {
     if (!raceName.trim()) return "Podaj nazwę biegu.";
-    if (!distance) return "Wybierz dystans biegu.";
+    const normalized = sanitizeDistances(distancesList);
+    if (!normalized.length) return "Dodaj co najmniej jeden dystans biegu.";
     if (!price || isNaN(Number(price)) || Number(price) <= 0) return "Podaj poprawną kwotę.";
     if (transferFee.trim()) {
       const parsedFee = Number(transferFee);
@@ -744,12 +912,31 @@ function ListingForm({ onAdd, ownerId, authorDisplayName, editingListing = null,
       raceName: raceName.trim(),
       eventDate: eventDate || undefined,
       location: location || undefined,
-      distance: /** @type {Distance | undefined} */ (distance || undefined),
       price: Number(price),
       contact: contact.trim(),
       description: description?.trim() || undefined,
       createdAt,
     };
+    const trimmedPrimary = distance.trim();
+    let normalizedList = sanitizeDistances(distancesList);
+    if (trimmedPrimary) {
+      normalizedList = [trimmedPrimary, ...normalizedList];
+    }
+    let distancesArray = arrangeDistances(
+      normalizedList,
+      trimmedPrimary || normalizedList[0] || ""
+    );
+    if (!distancesArray.length && trimmedPrimary) {
+      distancesArray = [trimmedPrimary];
+    }
+    l.distances = distancesArray.length ? distancesArray : [];
+    l.distance = l.distances[0] || "";
+    const km = parseDistanceToKm(l.distance);
+    if (Number.isFinite(km)) {
+      l.distanceKm = km;
+    } else if ("distanceKm" in l) {
+      delete l.distanceKm;
+    }
     if (!editingListing) {
       l.createdAt = createdAt;
     }
@@ -814,6 +1001,36 @@ function ListingForm({ onAdd, ownerId, authorDisplayName, editingListing = null,
     reset();
     setMsg(isEditing ? "Zapisano zmiany ✔" : "Dodano ogłoszenie ✔");
     setTimeout(() => setMsg(""), 2000);
+  }
+
+  function handleAddDistance() {
+    const value = distanceInput.trim();
+    if (!value) return;
+    const lower = value.toLowerCase();
+    const normalized = sanitizeDistances(distancesList);
+    const exists = normalized.some((item) => item.toLowerCase() === lower);
+    const baseList = exists ? normalized : [...normalized, value];
+    const primaryCandidate = distance.trim() || value;
+    applyDistances(baseList, primaryCandidate);
+    setDistanceInput("");
+  }
+
+  function handleRemoveDistance(value) {
+    const lower = value.toLowerCase();
+    const normalized = sanitizeDistances(distancesList);
+    const next = normalized.filter((item) => item.toLowerCase() !== lower);
+    const currentPrimary = distance.trim();
+    const nextPrimary =
+      currentPrimary && currentPrimary.toLowerCase() !== lower ? currentPrimary : next[0] || "";
+    applyDistances(next, nextPrimary);
+  }
+
+  function handleMakePrimary(value) {
+    if (!value) return;
+    const trimmed = value.trim();
+    if (!trimmed) return;
+    if (distance.trim().toLowerCase() === trimmed.toLowerCase()) return;
+    applyDistances(distancesList, trimmed);
   }
 
   const editionForMeta = selectedEdition ||
@@ -938,21 +1155,85 @@ function ListingForm({ onAdd, ownerId, authorDisplayName, editingListing = null,
       </div>
 
       <Field label="Dystans" required>
-        <select
-          value={distance}
-          onChange={(e) => setDistance(e.target.value)}
-          className="w-full px-3 py-2 rounded-xl border focus:outline-none focus:ring"
-          required
-        >
-          <option value="" disabled>
-            Wybierz dystans…
-          </option>
-          {DISTANCES.map((d) => (
-            <option key={d} value={d}>
-              {d}
-            </option>
-          ))}
-        </select>
+        <div className="flex flex-wrap items-center gap-2">
+          {distancesList.length === 0 && (
+            <span className="text-sm text-gray-500">Dodaj co najmniej jeden dystans.</span>
+          )}
+          {distancesList.map((value, index) => {
+            const isPrimary = index === 0;
+            return (
+              <div
+                key={value}
+                className={clsx(
+                  "inline-flex items-center gap-1 rounded-full px-2 py-1 text-sm",
+                  isPrimary ? "bg-neutral-900 text-white" : "bg-neutral-200 text-neutral-700"
+                )}
+              >
+                <button
+                  type="button"
+                  onClick={() => handleMakePrimary(value)}
+                  className={clsx(
+                    "inline-flex items-center gap-1 focus:outline-none",
+                    isPrimary ? "cursor-default" : "hover:text-neutral-900"
+                  )}
+                  title={isPrimary ? "Główny dystans" : "Ustaw jako główny dystans"}
+                >
+                  <span>{value}</span>
+                  <span
+                    className={clsx(
+                      "text-[10px] font-semibold uppercase tracking-wide",
+                      isPrimary ? "bg-white/20 text-white px-1 py-0.5 rounded" : "text-neutral-500"
+                    )}
+                  >
+                    {isPrimary ? "Główny" : "Ustaw"}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleRemoveDistance(value)}
+                  className={clsx(
+                    "leading-none focus:outline-none",
+                    isPrimary ? "text-white/80 hover:text-white" : "text-neutral-500 hover:text-neutral-700"
+                  )}
+                  aria-label={`Usuń dystans ${value}`}
+                >
+                  ×
+                </button>
+              </div>
+            );
+          })}
+          <div className="flex flex-wrap items-center gap-2">
+            <input
+              list="distance-suggestions"
+              value={distanceInput}
+              onChange={(e) => setDistanceInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  handleAddDistance();
+                }
+              }}
+              className="min-w-[140px] flex-1 px-3 py-2 rounded-xl border focus:outline-none focus:ring"
+              placeholder="np. 5 km"
+            />
+            <button
+              type="button"
+              onClick={handleAddDistance}
+              disabled={!distanceInput.trim()}
+              className="px-3 py-2 rounded-xl border bg-white hover:bg-neutral-50 disabled:opacity-50"
+            >
+              Dodaj
+            </button>
+            <datalist id="distance-suggestions">
+              {DISTANCE_SUGGESTIONS.map((item) => (
+                <option key={item} value={item} />
+              ))}
+            </datalist>
+          </div>
+        </div>
+        <p className="mt-2 text-xs text-gray-500">
+          Enter lub „Dodaj” dopisuje dystans. Kliknij odznakę, aby ustawić ją jako główną.
+        </p>
       </Field>
 
       <Field label={type === "sell" ? "Cena (PLN)" : "Budżet / proponowana kwota (PLN)"} required>
@@ -1532,7 +1813,10 @@ function AlertsList({ alerts, loading, onToggle, onDelete, onEdit, emailOptIn })
 /** @param {{ listing: Listing, onDelete: (id:string)=>void, onOpen: (listing: Listing)=>void, onMessage: (listing: Listing)=>void, currentUserId?: string, onEdit?: (listing: Listing)=>void, viewerDisplayName?: string }} props */
 function ListingCard({ listing, onDelete, onOpen, onMessage, currentUserId, onEdit, viewerDisplayName }) {
   const isSell = listing.type === "sell";
-  const distanceLabel = listing.distance || inferDistance(listing.raceName) || "—";
+  const distances = getListingDistances(listing);
+  const primaryDistance = distances[0] || "—";
+  const extraDistanceCount = primaryDistance === "—" ? 0 : Math.max(0, distances.length - 1);
+  const hasAdditionalDistances = extraDistanceCount > 0;
   const ownerId = getListingOwnerId(listing);
   const canMessage = !!ownerId && ownerId !== currentUserId;
   const canManage = !!currentUserId && !!ownerId && ownerId === currentUserId;
@@ -1544,6 +1828,9 @@ function ListingCard({ listing, onDelete, onOpen, onMessage, currentUserId, onEd
   const listingProofBadge = proofStatusBadgeMeta(listingProofStatus || "none");
   const maskedBib = listing.bib ? maskBib(listing.bib) : "";
   const showProof = isSell && (listing.bib || (listing.proof_status && listing.proof_status !== "none"));
+  const priceValue = Number(listing.price);
+  const hasPrice = Number.isFinite(priceValue);
+  const priceLabel = hasPrice ? toCurrency(priceValue, listing.currency || "PLN") : "";
   let listingProofCheckedLabel = "";
   if (listing.proof_checked_at) {
     const parsed = new Date(listing.proof_checked_at);
@@ -1559,22 +1846,25 @@ function ListingCard({ listing, onDelete, onOpen, onMessage, currentUserId, onEd
       tabIndex={0}
       onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && onOpen(listing)}
     >
-      <div className="flex items-center justify-between gap-3 mb-2">
-        <div className="flex items-center gap-2 flex-wrap">
-          <Badge color={isSell ? "bg-emerald-100 text-emerald-800" : "bg-sky-100 text-sky-800"}>{isSell ? "SPRZEDAM" : "KUPIĘ"}</Badge>
-          <h3 className="font-semibold text-lg">{listing.raceName}</h3>
-          {listing.edition_id && (
-            <span className="text-xs text-gray-500">
-              {(listing.editionEventName || listing.raceName) + (listing.editionYear ? ` — ${listing.editionYear}` : "")}
-            </span>
-          )}
+      <div className="flex items-baseline justify-between gap-3 mb-2">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2 flex-wrap mb-1 text-xs text-gray-500">
+            <Badge color={isSell ? "bg-emerald-100 text-emerald-800" : "bg-sky-100 text-sky-800"}>{
+              isSell ? "SPRZEDAM" : "KUPIĘ"
+            }</Badge>
+            {listing.edition_id && (
+              <span>
+                {(listing.editionEventName || listing.raceName) + (listing.editionYear ? ` — ${listing.editionYear}` : "")}
+              </span>
+            )}
+          </div>
+          <h3 className="text-lg font-semibold leading-tight truncate">{listing.raceName}</h3>
         </div>
-        <div className="text-right">
-          {!isSell && (
-            <div className="text-xs text-gray-500 leading-tight">Proponowana cena zakupu</div>
-          )}
-          <div className="font-semibold">{toPLN(listing.price)}</div>
-        </div>
+        {hasPrice && (
+          <div className="shrink-0 text-right">
+            <span className="text-xl font-bold">{priceLabel}</span>
+          </div>
+        )}
       </div>
       <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-sm text-gray-600 mb-2">
         <div>
@@ -1589,7 +1879,14 @@ function ListingCard({ listing, onDelete, onOpen, onMessage, currentUserId, onEd
         </div>
         <div>
           <span className="block text-gray-500">Dystans</span>
-          <span>{distanceLabel}</span>
+          <span className="inline-flex items-center gap-2">
+            <span>{primaryDistance}</span>
+            {hasAdditionalDistances && (
+              <span className="text-[11px] font-medium px-1.5 py-0.5 rounded-full bg-neutral-200 text-neutral-700">
+                +{extraDistanceCount}
+              </span>
+            )}
+          </span>
         </div>
         {hasTransferFee && (
           <div>
@@ -1720,6 +2017,12 @@ function DetailModal({ listing, onClose, onMessage, currentUserId, viewerDisplay
   const maskedBib = listing.bib ? maskBib(listing.bib) : "";
   const proofUrl = listing.proof_source_url || "";
   const showProof = isSell && (listing.bib || (listing.proof_status && listing.proof_status !== "none"));
+  const distances = getListingDistances(listing);
+  const hasDistances = distances.length > 0;
+  const priceValue = Number(listing.price);
+  const hasPrice = Number.isFinite(priceValue);
+  const priceLabel = hasPrice ? toCurrency(priceValue, listing.currency || "PLN") : "";
+  const createdAtLabel = new Date(listing.createdAt).toLocaleString("pl-PL");
   let listingProofCheckedLabel = "";
   if (listing.proof_checked_at) {
     const parsed = new Date(listing.proof_checked_at);
@@ -1743,10 +2046,11 @@ function DetailModal({ listing, onClose, onMessage, currentUserId, viewerDisplay
             Zamknij
           </button>
         </div>
-        <div className="mb-3">
-          {!isSell && <div className="text-xs text-gray-500 leading-tight">Proponowana cena zakupu</div>}
-          <div className="text-2xl font-semibold">{toPLN(listing.price)}</div>
-        </div>
+        {hasPrice && (
+          <div className="mb-3">
+            <div className="text-2xl font-semibold">{priceLabel}</div>
+          </div>
+        )}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm text-gray-700 mb-3">
           <div>
             <div className="text-gray-500">Data</div>
@@ -1758,10 +2062,14 @@ function DetailModal({ listing, onClose, onMessage, currentUserId, viewerDisplay
             <div className="text-gray-500">Lokalizacja</div>
             <div>{listing.location || "—"}</div>
           </div>
-          {listing.distance && (
-            <div>
-              <div className="text-gray-500">Dystans</div>
-              <div>{listing.distance}</div>
+          {hasDistances && (
+            <div className="col-span-2 md:col-span-4">
+              <div className="text-gray-500">Dystanse</div>
+              <div className="flex flex-wrap gap-2 mt-1">
+                {distances.map((value) => (
+                  <Badge key={value}>{value}</Badge>
+                ))}
+              </div>
             </div>
           )}
           {hasTransferFee && (
@@ -1776,10 +2084,6 @@ function DetailModal({ listing, onClose, onMessage, currentUserId, viewerDisplay
               <span className="whitespace-nowrap tabular-nums">{listing.transferDeadline}</span>
             </div>
           )}
-          <div>
-            <div className="text-gray-500">Dodano</div>
-            <div>{new Date(listing.createdAt).toLocaleString("pl-PL")}</div>
-          </div>
         </div>
         {authorLabel && <div className="text-sm text-gray-500 mb-3">Autor: {authorLabel}</div>}
         {showProof && (
@@ -1824,6 +2128,7 @@ function DetailModal({ listing, onClose, onMessage, currentUserId, viewerDisplay
             </button>
           )}
         </div>
+        <div className="mt-4 text-xs text-gray-500">Dodano: {createdAtLabel}</div>
       </div>
     </div>
   );
@@ -2896,7 +3201,10 @@ export default function App() {
         l.raceName.toLowerCase().includes(q) ||
         (l.location || "").toLowerCase().includes(q) ||
         (l.description || "").toLowerCase().includes(q);
-      const okDistance = distanceFilter === "all" || (l.distance || inferDistance(l.raceName)) === distanceFilter;
+      const distances = getListingDistances(l);
+      const okDistance =
+        distanceFilter === "all" ||
+        distances.includes(distanceFilter);
       return okType && okQuery && okDistance;
     });
 
@@ -2935,8 +3243,9 @@ export default function App() {
       owner_id: l.owner_id || currentUserId,
       author_display_name: l.author_display_name || fallbackName,
     };
+    const normalizedPayload = normalizeListing(payload);
     setListings((prev) => {
-      const idx = prev.findIndex((item) => item.id === payload.id);
+      const idx = prev.findIndex((item) => item.id === normalizedPayload.id);
       if (idx >= 0) {
         const existing = prev[idx];
         const ownerId = getListingOwnerId(existing);
@@ -2944,14 +3253,14 @@ export default function App() {
           return prev;
         }
         const next = [...prev];
-        next[idx] = { ...existing, ...payload };
+        next[idx] = { ...existing, ...normalizedPayload };
         return next;
       }
-      return [payload, ...prev];
+      return [normalizedPayload, ...prev];
     });
     setEditingListing(null);
     purgeExpiredListings();
-    publishListing(payload);
+    publishListing(normalizedPayload);
   }
 
   function deleteListing(id) {
@@ -3061,7 +3370,10 @@ export default function App() {
                           const listing = notif?.payload?.listing || {};
                           const typeLabel = listing?.type === "sell" ? "Sprzedam" : listing?.type === "buy" ? "Kupię" : "Ogłoszenie";
                           const time = formatRelativeTime(notif.created_at);
-                          const priceLabel = typeof listing?.price === "number" ? toPLN(listing.price) : "";
+                          const priceLabel =
+                            typeof listing?.price === "number"
+                              ? toCurrency(listing.price, listing?.currency || "PLN")
+                              : "";
                           const localListing = listings.find((l) => l.id === notif.listing_id);
                           return (
                             <button
