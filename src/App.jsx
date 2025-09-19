@@ -55,6 +55,34 @@ const DISTANCES = /** @type {const} */ (["5 km", "10 km", "Półmaraton", "Marat
  * @property {string[] | null} distances
  */
 
+/** @typedef {"sell" | "buy" | "any"} AlertMode */
+
+/**
+ * @typedef {Object} Alert
+ * @property {string} id
+ * @property {string} user_id
+ * @property {AlertMode} mode
+ * @property {number | null} [event_id]
+ * @property {string | null} [event_label]
+ * @property {string | null} [query_text]
+ * @property {Distance | null} [distance]
+ * @property {number | null} [max_price]
+ * @property {boolean} is_active
+ * @property {boolean} send_email
+ * @property {string} created_at
+ */
+
+/**
+ * @typedef {Object} UserNotification
+ * @property {string} id
+ * @property {string} user_id
+ * @property {string | null} [listing_id]
+ * @property {"inapp" | "email"} channel
+ * @property {boolean} is_read
+ * @property {string} created_at
+ * @property {{ listing?: any, alerts?: any[] }} [payload]
+ */
+
 // ----------------------- Pomocnicze funkcje ----------------------
 const STORAGE_KEY = "race_listings_v1";
 
@@ -137,6 +165,22 @@ function maskBib(value = "") {
   return `${"•".repeat(Math.max(3, input.length - 3))}${visible}`;
 }
 
+function formatEditionMeta(item) {
+  if (!item) return "";
+  const locationParts = [item.city, item.country_code].filter(Boolean);
+  const locationLabel = locationParts.length ? `(${locationParts.join(", ")})` : "";
+  const year = item.year ?? item.edition_year ?? item.editionYear ?? null;
+  const yearLabel = year ? `— ${year}` : "";
+  return [locationLabel, yearLabel].filter(Boolean).join(" ").trim();
+}
+
+function formatEditionLabel(item) {
+  if (!item) return "";
+  const name = item.event_name || item.editionEventName || item.event_label || "";
+  const year = item.year ?? item.edition_year ?? item.editionYear ?? null;
+  return [name, year ? String(year) : ""].filter(Boolean).join(" ").trim();
+}
+
 function proofStatusBadgeMeta(status = "") {
   switch (status) {
     case "verified":
@@ -162,6 +206,41 @@ function inferDistance(raceName = "") {
   if (lower.includes("10")) return "10 km";
   if (lower.includes("5")) return "5 km";
   return undefined;
+}
+
+function alertModeLabel(mode) {
+  switch (mode) {
+    case "sell":
+      return "Sprzedam";
+    case "buy":
+      return "Kupię";
+    default:
+      return "Sprzedam/Kupię";
+  }
+}
+
+function formatRelativeTime(value) {
+  if (!value) return "";
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const diffMs = Date.now() - date.getTime();
+  const minute = 60 * 1000;
+  const hour = 60 * minute;
+  const day = 24 * hour;
+  if (diffMs < minute) return "przed chwilą";
+  if (diffMs < hour) {
+    const minutes = Math.round(diffMs / minute);
+    return `${minutes} min temu`;
+  }
+  if (diffMs < day) {
+    const hours = Math.round(diffMs / hour);
+    return `${hours} godz. temu`;
+  }
+  const days = Math.round(diffMs / day);
+  if (days <= 7) {
+    return `${days} dni temu`;
+  }
+  return date.toLocaleString("pl-PL");
 }
 
 /**
@@ -459,13 +538,6 @@ function ListingForm({ onAdd, ownerId, authorDisplayName, editingListing = null,
         setDistance(first);
       }
     }
-  }
-
-  function formatEditionMeta(item) {
-    const locationParts = [item.city, item.country_code].filter(Boolean);
-    const locationLabel = locationParts.length ? `(${locationParts.join(", ")})` : "";
-    const yearLabel = item.year ? `— ${item.year}` : "";
-    return [locationLabel, yearLabel].filter(Boolean).join(" ");
   }
 
   function reset() {
@@ -946,6 +1018,434 @@ function ListingForm({ onAdd, ownerId, authorDisplayName, editingListing = null,
   );
 }
 
+/**
+ * @param {{
+ *   onSubmit: (payload: Partial<Alert> & { mode: AlertMode, send_email: boolean, is_active: boolean }) => Promise<void> | void,
+ *   saving: boolean,
+ *   editingAlert: Alert | null,
+ *   onCancelEdit: () => void,
+ *   emailOptIn: boolean,
+ *   requestEmailOptIn: (next: boolean) => Promise<boolean>,
+ * }} props
+ */
+function AlertForm({ onSubmit, saving, editingAlert, onCancelEdit, emailOptIn, requestEmailOptIn }) {
+  const [mode, setMode] = useState(/** @type {AlertMode} */ ("any"));
+  const [searchValue, setSearchValue] = useState("");
+  const [selectedEdition, setSelectedEdition] = useState(/** @type {(EditionSearchResult | null)} */(null));
+  const [distance, setDistance] = useState("");
+  const [maxPrice, setMaxPrice] = useState("");
+  const [sendEmail, setSendEmail] = useState(false);
+  const [isActive, setIsActive] = useState(true);
+  const [message, setMessage] = useState("");
+  const [suggestions, setSuggestions] = useState(/** @type {EditionSearchResult[]} */([]));
+  const [isSearching, setIsSearching] = useState(false);
+  const [searchError, setSearchError] = useState("");
+  const [showSuggestions, setShowSuggestions] = useState(false);
+
+  useEffect(() => {
+    const term = searchValue.trim();
+    if (term.length < 2) {
+      setSuggestions([]);
+      setIsSearching(false);
+      setSearchError("");
+      return;
+    }
+
+    let ignore = false;
+    setIsSearching(true);
+    setSearchError("");
+    const handler = setTimeout(async () => {
+      try {
+        const { data, error } = await supabase
+          .from("event_editions_search")
+          .select("edition_id,event_name,city,country_code,year,start_date,distances")
+          .ilike("event_name", `%${term}%`)
+          .order("year", { ascending: false })
+          .limit(20);
+        if (ignore) return;
+        if (error) {
+          console.error(error);
+          setSearchError("Nie udało się pobrać propozycji.");
+          setSuggestions([]);
+        } else {
+          setSuggestions(data || []);
+        }
+      } catch (err) {
+        if (ignore) return;
+        console.error(err);
+        setSearchError("Nie udało się pobrać propozycji.");
+        setSuggestions([]);
+      } finally {
+        if (!ignore) setIsSearching(false);
+      }
+    }, 250);
+
+    return () => {
+      ignore = true;
+      clearTimeout(handler);
+    };
+  }, [searchValue]);
+
+  useEffect(() => {
+    if (!editingAlert) {
+      setMode("any");
+      setSearchValue("");
+      setSelectedEdition(null);
+      setDistance("");
+      setMaxPrice("");
+      setSendEmail(false);
+      setIsActive(true);
+      setMessage("");
+      return;
+    }
+
+    setMode(editingAlert.mode || "any");
+    if (editingAlert.event_id) {
+      setSelectedEdition({
+        edition_id: editingAlert.event_id,
+        event_name: editingAlert.event_label || editingAlert.query_text || "",
+        city: null,
+        country_code: null,
+        year: null,
+        start_date: null,
+        distances: null,
+      });
+      setSearchValue(formatEditionLabel({
+        event_name: editingAlert.event_label || editingAlert.query_text || "",
+        year: null,
+      }));
+    } else {
+      setSelectedEdition(null);
+      setSearchValue(editingAlert.query_text || "");
+    }
+    setDistance(editingAlert.distance || "");
+    setMaxPrice(
+      typeof editingAlert.max_price === "number" && Number.isFinite(editingAlert.max_price)
+        ? String(editingAlert.max_price)
+        : ""
+    );
+    setSendEmail(!!editingAlert.send_email);
+    setIsActive(editingAlert.is_active !== false);
+    setMessage("");
+  }, [editingAlert]);
+
+  function resetForm() {
+    setMode("any");
+    setSearchValue("");
+    setSelectedEdition(null);
+    setDistance("");
+    setMaxPrice("");
+    setSendEmail(false);
+    setIsActive(true);
+    setMessage("");
+    setSuggestions([]);
+    setSearchError("");
+  }
+
+  function handleSelectEdition(item) {
+    setSelectedEdition(item);
+    setSearchValue(formatEditionLabel(item) || item.event_name || "");
+    setShowSuggestions(false);
+    setSuggestions([]);
+  }
+
+  async function handleSendEmailToggle(next) {
+    if (next && !emailOptIn) {
+      const ok = await requestEmailOptIn(true);
+      if (!ok) {
+        setMessage("Nie udało się włączyć powiadomień e-mail.");
+        return;
+      }
+    }
+    setSendEmail(next);
+  }
+
+  async function handleSubmit(e) {
+    e.preventDefault();
+    setMessage("");
+    const trimmed = searchValue.trim();
+    if (!selectedEdition && !trimmed) {
+      setMessage("Podaj nazwę biegu lub wybierz go z listy.");
+      return;
+    }
+    const payload = {
+      mode,
+      distance: distance || null,
+      max_price: maxPrice ? Number(maxPrice.replace(",", ".")) : null,
+      send_email: sendEmail,
+      is_active: isActive,
+      event_id: selectedEdition ? selectedEdition.edition_id : null,
+      event_label: selectedEdition ? formatEditionLabel(selectedEdition) || selectedEdition.event_name || null : null,
+      query_text: selectedEdition ? null : trimmed || null,
+    };
+    if (Number.isNaN(payload.max_price)) {
+      setMessage("Podaj poprawną maksymalną cenę.");
+      return;
+    }
+    try {
+      await onSubmit(editingAlert ? { ...payload, id: editingAlert.id } : payload);
+      if (!editingAlert) {
+        resetForm();
+        setMessage("Alert zapisany ✔");
+        setTimeout(() => setMessage(""), 2000);
+      } else {
+        setMessage("Zapisano zmiany ✔");
+        setTimeout(() => setMessage(""), 2000);
+      }
+    } catch (err) {
+      console.error(err);
+      setMessage(err?.message || "Nie udało się zapisać alertu.");
+    }
+  }
+
+  const selectedEditionMeta = selectedEdition ? formatEditionMeta(selectedEdition) : "";
+
+  return (
+    <form onSubmit={handleSubmit} className="space-y-3">
+      <div className="grid grid-cols-3 gap-2">
+        <button
+          type="button"
+          className={clsx(
+            "px-3 py-2 rounded-xl border",
+            mode === "sell" ? "bg-neutral-900 text-white" : "bg-white hover:bg-neutral-50"
+          )}
+          onClick={() => setMode("sell")}
+        >
+          Sprzedam
+        </button>
+        <button
+          type="button"
+          className={clsx(
+            "px-3 py-2 rounded-xl border",
+            mode === "buy" ? "bg-neutral-900 text-white" : "bg-white hover:bg-neutral-50"
+          )}
+          onClick={() => setMode("buy")}
+        >
+          Kupię
+        </button>
+        <button
+          type="button"
+          className={clsx(
+            "px-3 py-2 rounded-xl border",
+            mode === "any" ? "bg-neutral-900 text-white" : "bg-white hover:bg-neutral-50"
+          )}
+          onClick={() => setMode("any")}
+        >
+          Oba typy
+        </button>
+      </div>
+
+      <Field label="Bieg lub fraza" required>
+        <div className="relative">
+          <input
+            value={searchValue}
+            onChange={(e) => {
+              setSearchValue(e.target.value);
+              setShowSuggestions(true);
+              if (selectedEdition) {
+                setSelectedEdition(null);
+              }
+            }}
+            onFocus={() => setShowSuggestions(true)}
+            className="w-full px-3 py-2 rounded-xl border focus:outline-none focus:ring"
+            placeholder="np. Maraton Warszawski"
+            disabled={saving}
+          />
+          {selectedEdition && (
+            <button
+              type="button"
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-sky-600 underline"
+              onClick={() => setSelectedEdition(null)}
+            >
+              Usuń wybór
+            </button>
+          )}
+          {showSuggestions && (suggestions.length > 0 || isSearching || searchError) && (
+            <div className="absolute z-10 mt-1 w-full max-h-60 overflow-y-auto bg-white border rounded-xl shadow-lg text-sm">
+              {isSearching && (
+                <div className="px-3 py-2 text-gray-500">Wyszukuję…</div>
+              )}
+              {searchError && <div className="px-3 py-2 text-rose-600">{searchError}</div>}
+              {suggestions.map((item) => (
+                <button
+                  type="button"
+                  key={item.edition_id}
+                  className="w-full text-left px-3 py-2 hover:bg-neutral-100"
+                  onClick={() => handleSelectEdition(item)}
+                >
+                  <div className="font-medium">{item.event_name}</div>
+                  <div className="text-xs text-gray-500">{formatEditionMeta(item) || ""}</div>
+                </button>
+              ))}
+              {!isSearching && !suggestions.length && !searchError && (
+                <div className="px-3 py-2 text-gray-500">Brak propozycji.</div>
+              )}
+            </div>
+          )}
+        </div>
+        {selectedEditionMeta && (
+          <div className="text-xs text-gray-500 mt-1">Wybrana edycja: {selectedEditionMeta}</div>
+        )}
+      </Field>
+
+      <Field label="Dystans">
+        <select
+          value={distance}
+          onChange={(e) => setDistance(e.target.value)}
+          className="w-full px-3 py-2 rounded-xl border focus:outline-none focus:ring"
+          disabled={saving}
+        >
+          <option value="">Dowolny dystans</option>
+          {DISTANCES.map((d) => (
+            <option key={d} value={d}>
+              {d}
+            </option>
+          ))}
+        </select>
+      </Field>
+
+      <Field label="Maksymalna cena">
+        <input
+          value={maxPrice}
+          onChange={(e) => setMaxPrice(e.target.value.replace(",", "."))}
+          inputMode="decimal"
+          placeholder="np. 250"
+          className="w-full px-3 py-2 rounded-xl border focus:outline-none focus:ring"
+          disabled={saving}
+        />
+      </Field>
+
+      <div className="flex items-center gap-2 text-sm">
+        <label className="flex items-center gap-2">
+          <input
+            type="checkbox"
+            checked={sendEmail}
+            onChange={(e) => {
+              const next = e.target.checked;
+              handleSendEmailToggle(next);
+            }}
+            disabled={saving}
+          />
+          <span>Powiadom mnie e-mailem</span>
+        </label>
+        {!emailOptIn && (
+          <span className="text-xs text-gray-500">
+            Wymaga zgody w profilu.
+          </span>
+        )}
+      </div>
+
+      <label className="flex items-center gap-2 text-sm">
+        <input
+          type="checkbox"
+          checked={isActive}
+          onChange={(e) => setIsActive(e.target.checked)}
+          disabled={saving}
+        />
+        <span>Alert aktywny</span>
+      </label>
+
+      <div className="flex items-center gap-3">
+        <button
+          type="submit"
+          className="px-4 py-2 rounded-xl bg-neutral-900 text-white disabled:opacity-50"
+          disabled={saving}
+        >
+          {editingAlert ? "Zapisz alert" : "Dodaj alert"}
+        </button>
+        {editingAlert && (
+          <button
+            type="button"
+            className="px-4 py-2 rounded-xl border bg-white hover:bg-neutral-50"
+            onClick={() => {
+              onCancelEdit();
+              resetForm();
+            }}
+            disabled={saving}
+          >
+            Anuluj edycję
+          </button>
+        )}
+        {message && <span className="text-sm text-gray-600">{message}</span>}
+      </div>
+    </form>
+  );
+}
+
+/**
+ * @param {{
+ *  alerts: Alert[],
+ *  loading: boolean,
+ *  onToggle: (alert: Alert, next: boolean) => Promise<void> | void,
+ *  onDelete: (alert: Alert) => Promise<void> | void,
+ *  onEdit: (alert: Alert) => void,
+ *  emailOptIn: boolean,
+ * }} props
+ */
+function AlertsList({ alerts, loading, onToggle, onDelete, onEdit, emailOptIn }) {
+  if (loading) {
+    return <div className="text-sm text-gray-500">Ładuję alerty…</div>;
+  }
+  if (!alerts.length) {
+    return <div className="text-sm text-gray-600">Nie masz jeszcze alertów. Dodaj pierwszy, aby otrzymywać powiadomienia.</div>;
+  }
+
+  return (
+    <div className="space-y-3">
+      {alerts.map((alert) => {
+        const created = formatRelativeTime(alert.created_at);
+        const distanceLabel = alert.distance || "Dowolny dystans";
+        const priceLabel = alert.max_price ? `≤ ${toPLN(alert.max_price)}` : "Dowolna kwota";
+        const targetLabel = alert.event_label || alert.query_text || "Dowolna fraza";
+        return (
+          <div key={alert.id} className="border rounded-2xl p-4 bg-white">
+            <div className="flex items-center justify-between gap-3 flex-wrap">
+              <div className="flex items-center gap-2 flex-wrap">
+                <Badge color="bg-sky-50 text-sky-700">{alertModeLabel(alert.mode)}</Badge>
+                <span className="font-semibold text-sm">{targetLabel}</span>
+                {alert.event_id && <span className="text-xs text-gray-500">ID edycji: {alert.event_id}</span>}
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => onToggle(alert, !alert.is_active)}
+                  className={clsx(
+                    "px-3 py-1.5 rounded-xl border text-sm",
+                    alert.is_active ? "bg-white hover:bg-neutral-50" : "bg-neutral-900 text-white"
+                  )}
+                >
+                  {alert.is_active ? "Wyłącz" : "Włącz"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onEdit(alert)}
+                  className="px-3 py-1.5 rounded-xl border text-sm bg-white hover:bg-neutral-50"
+                >
+                  Edytuj
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onDelete(alert)}
+                  className="px-3 py-1.5 rounded-xl bg-rose-50 text-rose-700 hover:bg-rose-100 text-sm"
+                >
+                  Usuń
+                </button>
+              </div>
+            </div>
+            <div className="text-xs text-gray-600 mt-2 flex flex-wrap gap-2">
+              <span>Dystans: {distanceLabel}</span>
+              <span>Maks. cena: {priceLabel}</span>
+              <span>Alert {alert.is_active ? "aktywny" : "wyłączony"}</span>
+              <span>Powiadomienie e-mail: {alert.send_email ? (emailOptIn ? "tak" : "czeka na zgodę") : "nie"}</span>
+            </div>
+            {created && <div className="text-xs text-gray-400 mt-1">Dodano {created}</div>}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 /** @param {{ listing: Listing, onDelete: (id:string)=>void, onOpen: (listing: Listing)=>void, onMessage: (listing: Listing)=>void, currentUserId?: string, onEdit?: (listing: Listing)=>void }} props */
 function ListingCard({ listing, onDelete, onOpen, onMessage, currentUserId, onEdit }) {
   const isSell = listing.type === "sell";
@@ -1405,7 +1905,7 @@ export default function App() {
   const [sort, setSort] = useState("newest");
   const [ownershipFilter, setOwnershipFilter] = useState(/** @type {"all" | "mine"} */("all"));
   const [activeView, setActiveView] = useState(/** @type {"market" | "profile"} */("market"));
-  const [profileTab, setProfileTab] = useState(/** @type {"info" | "listings"} */("listings"));
+  const [profileTab, setProfileTab] = useState(/** @type {"info" | "listings" | "alerts"} */("listings"));
   const [selected, setSelected] = useState/** @type {(Listing|null)} */(null);
   const [session, setSession] = useState(null);
   const [authOpen, setAuthOpen] = useState(false);
@@ -1416,9 +1916,22 @@ export default function App() {
   const [chatLoading, setChatLoading] = useState(false);
   const [chatError, setChatError] = useState("");
   const [chatSending, setChatSending] = useState(false);
-  const [unreadCount, setUnreadCount] = useState(0);
+  const [unreadMessages, setUnreadMessages] = useState(0);
   const [authorDisplayName, setAuthorDisplayName] = useState("");
   const [purgeMessage, setPurgeMessage] = useState("");
+  const [alerts, setAlerts] = useState(/** @type {Alert[]} */([]));
+  const [alertsLoading, setAlertsLoading] = useState(false);
+  const [alertsError, setAlertsError] = useState("");
+  const [alertSaving, setAlertSaving] = useState(false);
+  const [editingAlert, setEditingAlert] = useState/** @type {(Alert|null)} */(null);
+  const [notifications, setNotifications] = useState(/** @type {UserNotification[]} */([]));
+  const [notificationsLoading, setNotificationsLoading] = useState(false);
+  const [notificationsOpen, setNotificationsOpen] = useState(false);
+  const [notificationUnreadCount, setNotificationUnreadCount] = useState(0);
+  const notificationsRef = useRef(/** @type {(HTMLDivElement | null)} */(null));
+  const [alertsMessage, setAlertsMessage] = useState("");
+  const [emailOptIn, setEmailOptIn] = useState(false);
+  const [emailOptInSaving, setEmailOptInSaving] = useState(false);
   const currentUserId = session?.user?.id || null;
   const sessionEmail = session?.user?.email || "";
   const profileDisplayName =
@@ -1475,7 +1988,7 @@ export default function App() {
 
   const refreshUnread = useCallback(async () => {
     if (!currentUserId) {
-      setUnreadCount(0);
+      setUnreadMessages(0);
       return;
     }
     const { count, error } = await supabase
@@ -1487,8 +2000,187 @@ export default function App() {
       console.error(error);
       return;
     }
-    setUnreadCount(count ?? 0);
+    setUnreadMessages(count ?? 0);
   }, [currentUserId]);
+
+  const fetchAlerts = useCallback(async () => {
+    if (!currentUserId) return;
+    setAlertsLoading(true);
+    setAlertsError("");
+    try {
+      const { data, error } = await supabase
+        .from("alerts")
+        .select(
+          "id,user_id,mode,event_id,event_label,query_text,distance,max_price,send_email,is_active,created_at"
+        )
+        .eq("user_id", currentUserId)
+        .order("created_at", { ascending: false });
+      if (error) throw error;
+      setAlerts(data || []);
+    } catch (err) {
+      console.error(err);
+      setAlerts([]);
+      setAlertsError("Nie udało się pobrać alertów.");
+    } finally {
+      setAlertsLoading(false);
+    }
+  }, [currentUserId]);
+
+  const fetchNotifications = useCallback(async () => {
+    if (!currentUserId) return;
+    setNotificationsLoading(true);
+    try {
+      const { data, error } = await supabase
+        .from("notifications")
+        .select("id,user_id,listing_id,channel,is_read,created_at,payload")
+        .eq("user_id", currentUserId)
+        .eq("channel", "inapp")
+        .order("created_at", { ascending: false })
+        .limit(20);
+      if (error) throw error;
+      setNotifications(data || []);
+      const { count, error: countError } = await supabase
+        .from("notifications")
+        .select("id", { count: "exact", head: true })
+        .eq("user_id", currentUserId)
+        .eq("channel", "inapp")
+        .eq("is_read", false);
+      if (!countError) {
+        setNotificationUnreadCount(count ?? 0);
+      }
+    } catch (err) {
+      console.error(err);
+      setNotifications([]);
+      setNotificationUnreadCount(0);
+    } finally {
+      setNotificationsLoading(false);
+    }
+  }, [currentUserId]);
+
+  const requestEmailOptIn = useCallback(
+    async (next) => {
+      if (!currentUserId) return false;
+      setEmailOptInSaving(true);
+      setAlertsMessage("");
+      try {
+        const { error } = await supabase
+          .from("profiles")
+          .update({ email_notifications: next })
+          .eq("id", currentUserId);
+        if (error) throw error;
+        setEmailOptIn(next);
+        return true;
+      } catch (err) {
+        console.error(err);
+        setAlertsMessage(err?.message || "Nie udało się zaktualizować zgody e-mail.");
+        return false;
+      } finally {
+        setEmailOptInSaving(false);
+      }
+    },
+    [currentUserId]
+  );
+
+  const handleAlertSubmit = useCallback(
+    async (payload) => {
+      if (!currentUserId) {
+        const err = new Error("Musisz być zalogowany, aby tworzyć alerty.");
+        setAlertsMessage(err.message);
+        throw err;
+      }
+      setAlertSaving(true);
+      setAlertsMessage("");
+      const base = {
+        user_id: currentUserId,
+        mode: payload.mode,
+        event_id: payload.event_id || null,
+        event_label: payload.event_label || null,
+        query_text: payload.query_text || null,
+        distance: payload.distance || null,
+        max_price: payload.max_price ?? null,
+        send_email: payload.send_email,
+        is_active: payload.is_active,
+      };
+      try {
+        if (payload.id) {
+          const { error } = await supabase.from("alerts").update(base).eq("id", payload.id);
+          if (error) throw error;
+        } else {
+          const { error } = await supabase.from("alerts").insert(base);
+          if (error) throw error;
+        }
+        await fetchAlerts();
+        setEditingAlert(null);
+      } catch (err) {
+        console.error(err);
+        const message = err?.message || "Nie udało się zapisać alertu.";
+        setAlertsMessage(message);
+        throw err instanceof Error ? err : new Error(message);
+      } finally {
+        setAlertSaving(false);
+      }
+    },
+    [currentUserId, fetchAlerts]
+  );
+
+  const handleToggleAlert = useCallback(
+    async (alert, next) => {
+      if (!currentUserId) return;
+      setAlerts((prev) => prev.map((item) => (item.id === alert.id ? { ...item, is_active: next } : item)));
+      const { error } = await supabase.from("alerts").update({ is_active: next }).eq("id", alert.id);
+      if (error) {
+        console.error(error);
+        setAlertsMessage("Nie udało się zaktualizować alertu.");
+        fetchAlerts();
+      }
+    },
+    [currentUserId, fetchAlerts]
+  );
+
+  const handleDeleteAlert = useCallback(
+    async (alert) => {
+      if (!currentUserId) return;
+      if (!confirm("Na pewno usunąć ten alert?")) return;
+      try {
+        const { error } = await supabase.from("alerts").delete().eq("id", alert.id);
+        if (error) throw error;
+        setAlerts((prev) => prev.filter((item) => item.id !== alert.id));
+        if (editingAlert?.id === alert.id) {
+          setEditingAlert(null);
+        }
+      } catch (err) {
+        console.error(err);
+        setAlertsMessage(err?.message || "Nie udało się usunąć alertu.");
+      }
+    },
+    [currentUserId, editingAlert]
+  );
+
+  const markNotificationRead = useCallback(
+    async (notification) => {
+      if (!currentUserId || notification.channel !== "inapp" || notification.is_read) return;
+      setNotifications((prev) => prev.map((item) => (item.id === notification.id ? { ...item, is_read: true } : item)));
+      setNotificationUnreadCount((prev) => (prev > 0 ? prev - 1 : 0));
+      const { error } = await supabase.from("notifications").update({ is_read: true }).eq("id", notification.id);
+      if (error) {
+        console.error(error);
+        fetchNotifications();
+      }
+    },
+    [currentUserId, fetchNotifications]
+  );
+
+  const publishListing = useCallback(async (listing) => {
+    try {
+      await fetch("/api/alerts-fanout", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ listing }),
+      });
+    } catch (err) {
+      console.error("Nie udało się opublikować ogłoszenia do alertów", err);
+    }
+  }, []);
 
   const markThreadMessagesRead = useCallback(
     async (threadId) => {
@@ -1555,6 +2247,13 @@ export default function App() {
       setAuthorDisplayName("");
       setActiveView("market");
       setProfileTab("listings");
+      setAlerts([]);
+      setAlertsError("");
+      setEditingAlert(null);
+      setEmailOptIn(false);
+      setNotifications([]);
+      setNotificationUnreadCount(0);
+      setNotificationsOpen(false);
       return;
     }
     const fallback =
@@ -1568,7 +2267,7 @@ export default function App() {
       try {
         const { data, error } = await supabase
           .from("profiles")
-          .select("display_name")
+          .select("display_name,email_notifications")
           .eq("id", session.user.id)
           .maybeSingle();
         if (ignore) return;
@@ -1580,6 +2279,9 @@ export default function App() {
         }
         if (data?.display_name) {
           setAuthorDisplayName(data.display_name);
+        }
+        if (typeof data?.email_notifications === "boolean") {
+          setEmailOptIn(data.email_notifications);
         }
       } catch (err) {
         if (!ignore) {
@@ -1595,7 +2297,7 @@ export default function App() {
 
   useEffect(() => {
     if (!currentUserId) {
-      setUnreadCount(0);
+      setUnreadMessages(0);
       return;
     }
     refreshUnread();
@@ -1606,6 +2308,60 @@ export default function App() {
       setOwnershipFilter("all");
       setEditingListing(null);
     }
+  }, [currentUserId]);
+
+  useEffect(() => {
+    if (!currentUserId) return;
+    fetchAlerts();
+    fetchNotifications();
+  }, [currentUserId, fetchAlerts, fetchNotifications]);
+
+  useEffect(() => {
+    if (!notificationsOpen) return;
+    function handleClickOutside(event) {
+      if (!notificationsRef.current) return;
+      if (!notificationsRef.current.contains(event.target)) {
+        setNotificationsOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [notificationsOpen]);
+
+  useEffect(() => {
+    if (!currentUserId) return undefined;
+    const channel = supabase
+      .channel(`notifications-${currentUserId}`)
+      .on(
+        "postgres_changes",
+        { event: "INSERT", schema: "public", table: "notifications", filter: `user_id=eq.${currentUserId}` },
+        (payload) => {
+          if (payload?.new?.channel !== "inapp") return;
+          setNotifications((prev) => {
+            const next = [payload.new, ...prev];
+            return next.slice(0, 20);
+          });
+          setNotificationUnreadCount((prev) => prev + 1);
+        }
+      )
+      .on(
+        "postgres_changes",
+        { event: "UPDATE", schema: "public", table: "notifications", filter: `user_id=eq.${currentUserId}` },
+        (payload) => {
+          setNotifications((prev) => prev.map((item) => (item.id === payload.new.id ? { ...item, ...payload.new } : item)));
+          if (
+            payload?.old?.channel === "inapp" &&
+            payload?.old?.is_read === false &&
+            payload?.new?.is_read === true
+          ) {
+            setNotificationUnreadCount((prev) => (prev > 0 ? prev - 1 : 0));
+          }
+        }
+      )
+      .subscribe();
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, [currentUserId]);
 
   useEffect(() => {
@@ -1875,6 +2631,7 @@ export default function App() {
     });
     setEditingListing(null);
     purgeExpiredListings();
+    publishListing(payload);
   }
 
   function deleteListing(id) {
@@ -1980,16 +2737,74 @@ export default function App() {
             <button onClick={exportCSV} className="px-3 py-1.5 rounded-xl border bg-white hover:bg-neutral-50">Eksportuj CSV</button>
             {session ? (
               <div className="flex items-center gap-2">
+                <div className="relative" ref={notificationsRef}>
+                  <button
+                    type="button"
+                    onClick={() => setNotificationsOpen((open) => !open)}
+                    className={clsx(
+                      "px-2 py-1.5 rounded-xl border flex items-center gap-1 text-sm",
+                      notificationUnreadCount
+                        ? "bg-amber-50 text-amber-700 border-amber-200"
+                        : "bg-white hover:bg-neutral-50"
+                    )}
+                  >
+                    <span aria-hidden>🔔</span>
+                    <span className="tabular-nums">{notificationUnreadCount}</span>
+                  </button>
+                  {notificationsOpen && (
+                    <div className="absolute right-0 mt-2 w-80 max-h-96 overflow-y-auto rounded-2xl border bg-white shadow-xl text-sm z-20">
+                      <div className="px-4 py-2 border-b font-semibold text-gray-800">Powiadomienia</div>
+                      {notificationsLoading ? (
+                        <div className="px-4 py-3 text-gray-500">Ładuję…</div>
+                      ) : notifications.length === 0 ? (
+                        <div className="px-4 py-3 text-gray-500">Brak powiadomień.</div>
+                      ) : (
+                        notifications.map((notif) => {
+                          const listing = notif?.payload?.listing || {};
+                          const typeLabel = listing?.type === "sell" ? "Sprzedam" : listing?.type === "buy" ? "Kupię" : "Ogłoszenie";
+                          const time = formatRelativeTime(notif.created_at);
+                          const priceLabel = typeof listing?.price === "number" ? toPLN(listing.price) : "";
+                          const localListing = listings.find((l) => l.id === notif.listing_id);
+                          return (
+                            <button
+                              key={notif.id}
+                              type="button"
+                              onClick={() => {
+                                markNotificationRead(notif);
+                                if (localListing) {
+                                  setSelected(localListing);
+                                  setActiveView("market");
+                                }
+                                setNotificationsOpen(false);
+                              }}
+                              className={clsx(
+                                "w-full text-left px-4 py-3 border-b last:border-b-0",
+                                notif.is_read ? "bg-white" : "bg-neutral-50"
+                              )}
+                            >
+                              <div className="font-medium text-gray-900">{listing?.race_name || "Nowe ogłoszenie"}</div>
+                              <div className="text-xs text-gray-600">
+                                {typeLabel}
+                                {priceLabel ? ` • ${priceLabel}` : ""}
+                              </div>
+                              {time && <div className="text-xs text-gray-400">{time}</div>}
+                            </button>
+                          );
+                        })
+                      )}
+                    </div>
+                  )}
+                </div>
                 <span
                   className={clsx(
                     "text-sm px-2 py-1 rounded-xl border flex items-center gap-1",
-                    unreadCount
+                    unreadMessages
                       ? "bg-sky-50 text-sky-700 border-sky-200"
                       : "bg-neutral-100 text-gray-600 border-neutral-200"
                   )}
                 >
                   <span aria-hidden>📨</span>
-                  <span className="tabular-nums">{unreadCount}</span>
+                  <span className="tabular-nums">{unreadMessages}</span>
                 </span>
                 <span className="text-sm text-gray-600">{session.user.email}</span>
                 <button
@@ -2178,17 +2993,28 @@ export default function App() {
                     >
                       Moje ogłoszenia
                     </button>
+                    <button
+                      type="button"
+                      onClick={() => setProfileTab("alerts")}
+                      className={clsx(
+                        "px-3 py-1.5 border-l",
+                        profileTab === "alerts" ? "bg-neutral-900 text-white" : "bg-white hover:bg-neutral-50"
+                      )}
+                    >
+                      Alerty
+                    </button>
                   </div>
                 }
               >
-                {profileTab === "info" ? (
+                {profileTab === "info" && (
                   <div className="text-sm text-gray-700 space-y-2">
                     <p>Możesz kontaktować się z innymi użytkownikami bezpośrednio z kart ogłoszeń.</p>
                     <p>
                       W zakładce „Moje ogłoszenia” znajdziesz swoje aktywne wpisy wraz z opcjami edycji i usuwania.
                     </p>
                   </div>
-                ) : (
+                )}
+                {profileTab === "listings" && (
                   <div className="space-y-4">
                     {myListings.length === 0 ? (
                       <div className="text-sm text-gray-600">
@@ -2209,6 +3035,53 @@ export default function App() {
                         ))}
                       </div>
                     )}
+                  </div>
+                )}
+                {profileTab === "alerts" && (
+                  <div className="space-y-4">
+                    <div className="flex items-center justify-between gap-3 rounded-2xl border bg-white px-4 py-3 text-sm">
+                      <div>
+                        <div className="font-medium text-gray-900">Powiadomienia e-mail</div>
+                        <div className="text-xs text-gray-500">
+                          {emailOptIn
+                            ? "Dla alertów z zaznaczoną opcją wyślemy e-mail."
+                            : "Włącz, aby otrzymywać e-maile o nowych ogłoszeniach."}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => requestEmailOptIn(!emailOptIn)}
+                        disabled={emailOptInSaving}
+                        className={clsx(
+                          "px-3 py-1.5 rounded-xl border text-sm",
+                          emailOptIn ? "bg-white hover:bg-neutral-50" : "bg-neutral-900 text-white",
+                          emailOptInSaving && "opacity-50 cursor-not-allowed"
+                        )}
+                      >
+                        {emailOptIn ? "Wyłącz" : "Włącz"}
+                      </button>
+                    </div>
+                    {alertsMessage && <div className="text-sm text-rose-600">{alertsMessage}</div>}
+                    <AlertForm
+                      onSubmit={handleAlertSubmit}
+                      saving={alertSaving}
+                      editingAlert={editingAlert}
+                      onCancelEdit={() => setEditingAlert(null)}
+                      emailOptIn={emailOptIn}
+                      requestEmailOptIn={requestEmailOptIn}
+                    />
+                    <AlertsList
+                      alerts={alerts}
+                      loading={alertsLoading}
+                      onToggle={handleToggleAlert}
+                      onDelete={handleDeleteAlert}
+                      onEdit={(alert) => {
+                        setEditingAlert(alert);
+                        window.scrollTo({ top: 0, behavior: "smooth" });
+                      }}
+                      emailOptIn={emailOptIn}
+                    />
+                    {alertsError && <div className="text-sm text-rose-600">{alertsError}</div>}
                   </div>
                 )}
               </Section>
