@@ -2380,7 +2380,6 @@ export default function App() {
   const [distanceFilter, setDistanceFilter] = useState(/** @type {"all" | Distance} */("all"));
   const [sort, setSort] = useState("newest");
   const [activeTab, setActiveTab] = useState(/** @type {"listings" | "terms"} */("listings"));
-  const [ownershipFilter, setOwnershipFilter] = useState(/** @type {"all" | "mine"} */("all"));
   const [activeView, setActiveView] = useState(/** @type {"market" | "profile" | "messages"} */("market"));
   const [profileTab, setProfileTab] = useState(/** @type {"info" | "listings" | "alerts"} */("listings"));
   const [selected, setSelected] = useState/** @type {(Listing|null)} */(null);
@@ -3208,16 +3207,12 @@ export default function App() {
       return okType && okQuery && okDistance;
     });
 
-    if (ownershipFilter === "mine" && currentUserId) {
-      arr = arr.filter((l) => getListingOwnerId(l) === currentUserId);
-    }
-
     if (sort === "newest") arr = arr.sort((a, b) => b.createdAt - a.createdAt);
     if (sort === "priceAsc") arr = arr.sort((a, b) => a.price - b.price);
     if (sort === "priceDesc") arr = arr.sort((a, b) => b.price - a.price);
 
     return arr;
-  }, [listings, query, typeFilter, distanceFilter, sort, ownershipFilter, currentUserId]);
+  }, [listings, query, typeFilter, distanceFilter, sort]);
 
   const myListings = useMemo(() => {
     if (!currentUserId) return [];
@@ -3512,30 +3507,6 @@ export default function App() {
                     <option value="priceAsc">Cena rosnąco</option>
                     <option value="priceDesc">Cena malejąco</option>
                   </select>
-                  {session && (
-                    <div className="flex rounded-xl border overflow-hidden text-sm">
-                      <button
-                        type="button"
-                        onClick={() => setOwnershipFilter("all")}
-                        className={clsx(
-                          "px-3 py-2",
-                          ownershipFilter === "all" ? "bg-neutral-900 text-white" : "bg-white hover:bg-neutral-50"
-                        )}
-                      >
-                        Wszystkie
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setOwnershipFilter("mine")}
-                        className={clsx(
-                          "px-3 py-2 border-l",
-                          ownershipFilter === "mine" ? "bg-neutral-900 text-white" : "bg-white hover:bg-neutral-50"
-                        )}
-                      >
-                        Moje
-                      </button>
-                    </div>
-                  )}
                 </div>
                 {filtered.length === 0 ? (
                   <div className="text-sm text-gray-600">Brak ogłoszeń dla wybranych filtrów.</div>
@@ -3595,7 +3566,7 @@ export default function App() {
                 <Section
                   title="Zakładki profilu"
                   right={
-                    <div className="flex rounded-xl border overflow-hidden text-sm">
+                    <>
                       <button
                         type="button"
                         onClick={() => setProfileTab("info")}
@@ -3626,7 +3597,7 @@ export default function App() {
                       >
                         Alerty
                       </button>
-                    </div>
+                    </>
                   }
                 >
                   {profileTab === "info" && (
