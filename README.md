@@ -53,6 +53,15 @@ Skrypt wysyła żądania co ok. 800 ms z nagłówkiem `User-Agent: RaceMarketpla
 wykonuje idempotentne upserty – wielokrotne uruchomienie nie duplikuje danych. W logach znajdziesz liczbę przetworzonych
 stron, wpisów oraz statystyki upsertów.
 
+### Scraper – kolizje slugów
+
+- Podczas wyszukiwania wydarzenia scraper porównuje nazwę i miasto case-insensitive, więc ponowne uruchomienie nie duplikuje
+  rekordów.
+- Slugi są budowane z nazwy oraz miasta (np. `bieg-niepodleglosci-warszawa`). Jeśli slug jest zajęty, kolejne próby dodają
+  sufiks `-2`, `-3`, ... – informacja o kolizji pojawia się w logu (`[scraper] slug collision for ...`).
+- Wstawianie rekordu ponawia się w razie konfliktu klucza unikalnego, by zachować idempotentność nawet przy równoległym
+  uruchomieniu.
+
 ### Integracja z Vercel Cron (opcjonalnie)
 
 Repozytorium zawiera plik `vercel.json` oraz endpoint `api/run-scraper.js`. Po wdrożeniu na Vercel cron raz w tygodniu
