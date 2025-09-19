@@ -3513,7 +3513,7 @@ export default function App() {
                     <option value="priceDesc">Cena malejąco</option>
                   </select>
                   {session && (
-                    <div className="flex rounded-xl border overflow-hidden text-sm">
+                    <>
                       <button
                         type="button"
                         onClick={() => setOwnershipFilter("all")}
@@ -3534,7 +3534,7 @@ export default function App() {
                       >
                         Moje
                       </button>
-                    </div>
+                    </>
                   )}
                 </div>
                 {filtered.length === 0 ? (
@@ -3595,7 +3595,7 @@ export default function App() {
                 <Section
                   title="Zakładki profilu"
                   right={
-                    <div className="flex rounded-xl border overflow-hidden text-sm">
+                    <>
                       <button
                         type="button"
                         onClick={() => setProfileTab("info")}
@@ -3626,7 +3626,7 @@ export default function App() {
                       >
                         Alerty
                       </button>
-                    </div>
+                    </>
                   }
                 >
                   {profileTab === "info" && (
