@@ -1404,6 +1404,8 @@ export default function App() {
   const [distanceFilter, setDistanceFilter] = useState(/** @type {"all" | Distance} */("all"));
   const [sort, setSort] = useState("newest");
   const [ownershipFilter, setOwnershipFilter] = useState(/** @type {"all" | "mine"} */("all"));
+  const [activeView, setActiveView] = useState(/** @type {"market" | "profile"} */("market"));
+  const [profileTab, setProfileTab] = useState(/** @type {"info" | "listings"} */("listings"));
   const [selected, setSelected] = useState/** @type {(Listing|null)} */(null);
   const [session, setSession] = useState(null);
   const [authOpen, setAuthOpen] = useState(false);
@@ -1418,6 +1420,12 @@ export default function App() {
   const [authorDisplayName, setAuthorDisplayName] = useState("");
   const [purgeMessage, setPurgeMessage] = useState("");
   const currentUserId = session?.user?.id || null;
+  const sessionEmail = session?.user?.email || "";
+  const profileDisplayName =
+    authorDisplayName ||
+    session?.user?.user_metadata?.full_name ||
+    session?.user?.user_metadata?.name ||
+    sessionEmail;
   const purgeMessageTimeoutRef = useRef(/** @type {ReturnType<typeof setTimeout> | null} */ (null));
 
   const showPurgeFeedback = useCallback((count) => {
@@ -1545,6 +1553,8 @@ export default function App() {
   useEffect(() => {
     if (!session?.user) {
       setAuthorDisplayName("");
+      setActiveView("market");
+      setProfileTab("listings");
       return;
     }
     const fallback =
@@ -1821,6 +1831,11 @@ export default function App() {
     return arr;
   }, [listings, query, typeFilter, distanceFilter, sort, ownershipFilter, currentUserId]);
 
+  const myListings = useMemo(() => {
+    if (!currentUserId) return [];
+    return listings.filter((l) => getListingOwnerId(l) === currentUserId);
+  }, [listings, currentUserId]);
+
   function addListing(l) {
     if (!currentUserId || !session) {
       return;
@@ -1877,10 +1892,12 @@ export default function App() {
     (listing) => {
       if (!currentUserId) return;
       if (getListingOwnerId(listing) !== currentUserId) return;
+      setActiveView("market");
+      setProfileTab("listings");
       setEditingListing(listing);
       window.scrollTo({ top: 0, behavior: "smooth" });
     },
-    [currentUserId]
+    [currentUserId, setActiveView, setProfileTab]
   );
 
   function exportCSV() {
@@ -1924,13 +1941,42 @@ export default function App() {
   return (
     <div className="min-h-screen bg-neutral-50 text-neutral-900">
       <header className="sticky top-0 z-10 backdrop-blur bg-white/70 border-b">
-        <div className="max-w-6xl mx-auto px-4 py-4 flex items-center gap-3">
-          <div className="w-9 h-9 rounded-2xl bg-neutral-900 text-white grid place-items-center text-lg">🏃‍♂️</div>
-          <div>
-            <h1 className="text-xl md:text-2xl font-bold leading-tight">Marketplace pakietów startowych</h1>
-            <p className="text-sm text-gray-600">Dodawaj ogłoszenia: sprzedaj i kup pakiety na biegi</p>
+        <div className="max-w-6xl mx-auto px-4 py-4 flex flex-wrap items-center gap-4">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-2xl bg-neutral-900 text-white grid place-items-center text-lg">🏃‍♂️</div>
+            <div>
+              <h1 className="text-xl md:text-2xl font-bold leading-tight">Marketplace pakietów startowych</h1>
+              <p className="text-sm text-gray-600">Dodawaj ogłoszenia: sprzedaj i kup pakiety na biegi</p>
+            </div>
           </div>
-          <div className="ml-auto flex items-center gap-2">
+          <nav className="flex items-center gap-2 text-sm">
+            <button
+              type="button"
+              onClick={() => setActiveView("market")}
+              className={clsx(
+                "px-3 py-1.5 rounded-xl border",
+                activeView === "market" ? "bg-neutral-900 text-white border-neutral-900" : "bg-white hover:bg-neutral-50"
+              )}
+            >
+              Ogłoszenia
+            </button>
+            {session && (
+              <button
+                type="button"
+                onClick={() => {
+                  setProfileTab("listings");
+                  setActiveView("profile");
+                }}
+                className={clsx(
+                  "px-3 py-1.5 rounded-xl border",
+                  activeView === "profile" ? "bg-neutral-900 text-white border-neutral-900" : "bg-white hover:bg-neutral-50"
+                )}
+              >
+                Mój profil
+              </button>
+            )}
+          </nav>
+          <div className="md:ml-auto flex items-center gap-2">
             <button onClick={exportCSV} className="px-3 py-1.5 rounded-xl border bg-white hover:bg-neutral-50">Eksportuj CSV</button>
             {session ? (
               <div className="flex items-center gap-2">
@@ -1965,25 +2011,212 @@ export default function App() {
         </div>
       </header>
 
-      <main className="max-w-6xl mx-auto px-4 py-6 grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div className="lg:col-span-1">
-          <Section
-            title="Dodaj ogłoszenie"
-            right={<Badge>{session ? "zalogowano" : "konto wymagane"}</Badge>}
-          >
-            {session ? (
-              <ListingForm
-                onAdd={addListing}
-                ownerId={session.user.id}
-                authorDisplayName={authorDisplayName}
-                editingListing={editingListing}
-                onCancelEdit={() => setEditingListing(null)}
-              />
-            ) : (
+      {activeView === "market" ? (
+        <main className="max-w-6xl mx-auto px-4 py-6 grid grid-cols-1 lg:grid-cols-3 gap-6">
+          <div className="lg:col-span-1">
+            <Section
+              title="Dodaj ogłoszenie"
+              right={<Badge>{session ? "zalogowano" : "konto wymagane"}</Badge>}
+            >
+              {session ? (
+                <ListingForm
+                  onAdd={addListing}
+                  ownerId={session.user.id}
+                  authorDisplayName={authorDisplayName}
+                  editingListing={editingListing}
+                  onCancelEdit={() => setEditingListing(null)}
+                />
+              ) : (
+                <div className="space-y-3">
+                  <p className="text-sm text-gray-700">
+                    Zaloguj się, aby dodać ogłoszenie. Ogłoszenia możesz przeglądać bez logowania.
+                  </p>
+                  <button
+                    className="px-4 py-2 rounded-xl bg-neutral-900 text-white hover:opacity-90"
+                    onClick={() => setAuthOpen(true)}
+                  >
+                    Zaloguj się / Zarejestruj
+                  </button>
+                </div>
+              )}
+            </Section>
+            <Section title="Wskazówki" right={null}>
+              <ul className="list-disc pl-5 text-sm text-gray-700 space-y-1">
+                <li>Sprawdź, czy organizator biegu dopuszcza oficjalny transfer pakietu.</li>
+                <li>Nie publikuj danych wrażliwych. Korzystaj z czatu/e-maila do ustaleń.</li>
+                <li>Unikaj przedpłat bez zabezpieczenia. Wybierz odbiór osobisty lub bezpieczne płatności.</li>
+              </ul>
+            </Section>
+          </div>
+
+          <div className="lg:col-span-2 space-y-6">
+            <Section title="Ogłoszenia" right={null}>
+              <div className="mb-4 flex items-center gap-2">
+                <input value={query} onChange={(e) => setQuery(e.target.value)} className="px-3 py-2 rounded-xl border w-48" placeholder="Szukaj…" />
+                <select value={typeFilter} onChange={(e) => setTypeFilter(/** @type any */(e.target.value))} className="px-3 py-2 rounded-xl border">
+                  <option value="all">Wszystkie</option>
+                  <option value="sell">Sprzedam</option>
+                  <option value="buy">Kupię</option>
+                </select>
+                <select
+                  value={distanceFilter}
+                  onChange={(e) => setDistanceFilter(/** @type {"all" | Distance} */(e.target.value))}
+                  className="px-3 py-2 rounded-xl border"
+                >
+                  <option value="all">Wszystkie dystanse</option>
+                  {DISTANCES.map((d) => (
+                    <option key={d} value={d}>
+                      {d}
+                    </option>
+                  ))}
+                </select>
+                <select value={sort} onChange={(e) => setSort(e.target.value)} className="px-3 py-2 rounded-xl border">
+                  <option value="newest">Najnowsze</option>
+                  <option value="priceAsc">Cena rosnąco</option>
+                  <option value="priceDesc">Cena malejąco</option>
+                </select>
+                {session && (
+                  <div className="flex rounded-xl border overflow-hidden text-sm">
+                    <button
+                      type="button"
+                      onClick={() => setOwnershipFilter("all")}
+                      className={clsx(
+                        "px-3 py-2",
+                        ownershipFilter === "all" ? "bg-neutral-900 text-white" : "bg-white hover:bg-neutral-50"
+                      )}
+                    >
+                      Wszystkie
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setOwnershipFilter("mine")}
+                      className={clsx(
+                        "px-3 py-2 border-l",
+                        ownershipFilter === "mine" ? "bg-neutral-900 text-white" : "bg-white hover:bg-neutral-50"
+                      )}
+                    >
+                      Moje
+                    </button>
+                  </div>
+                )}
+              </div>
+              {filtered.length === 0 ? (
+                <div className="text-sm text-gray-600">Brak ogłoszeń dla wybranych filtrów.</div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {filtered.map((l) => (
+                    <ListingCard
+                      key={l.id}
+                      listing={l}
+                      onDelete={deleteListing}
+                      onOpen={setSelected}
+                      onMessage={openChat}
+                      currentUserId={currentUserId || undefined}
+                      onEdit={startEditListing}
+                    />
+                  ))}
+                </div>
+              )}
+            </Section>
+          </div>
+        </main>
+      ) : (
+        <main className="max-w-5xl mx-auto px-4 py-6 space-y-6">
+          {session ? (
+            <>
+              <Section
+                title="Mój profil"
+                right={
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActiveView("market");
+                      setEditingListing(null);
+                      window.scrollTo({ top: 0, behavior: "smooth" });
+                    }}
+                    className="px-3 py-1.5 rounded-xl border bg-white hover:bg-neutral-50 text-sm"
+                  >
+                    Dodaj ogłoszenie
+                  </button>
+                }
+              >
+                <div className="text-sm text-gray-700 space-y-2">
+                  <div>
+                    <div className="text-xs uppercase text-gray-500">Nazwa wyświetlana</div>
+                    <div className="text-base font-semibold text-gray-900">{profileDisplayName || "Brak danych"}</div>
+                  </div>
+                  <div>
+                    <div className="text-xs uppercase text-gray-500">Adres e-mail</div>
+                    <div className="text-sm font-medium text-gray-900">{sessionEmail}</div>
+                  </div>
+                  <p className="text-xs text-gray-500">
+                    Dane pochodzą z Twojego profilu. Zmienisz je w ustawieniach konta Supabase.
+                  </p>
+                </div>
+              </Section>
+              <Section
+                title="Zakładki profilu"
+                right={
+                  <div className="flex rounded-xl border overflow-hidden text-sm">
+                    <button
+                      type="button"
+                      onClick={() => setProfileTab("info")}
+                      className={clsx(
+                        "px-3 py-1.5",
+                        profileTab === "info" ? "bg-neutral-900 text-white" : "bg-white hover:bg-neutral-50"
+                      )}
+                    >
+                      Dane konta
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setProfileTab("listings")}
+                      className={clsx(
+                        "px-3 py-1.5 border-l",
+                        profileTab === "listings" ? "bg-neutral-900 text-white" : "bg-white hover:bg-neutral-50"
+                      )}
+                    >
+                      Moje ogłoszenia
+                    </button>
+                  </div>
+                }
+              >
+                {profileTab === "info" ? (
+                  <div className="text-sm text-gray-700 space-y-2">
+                    <p>Możesz kontaktować się z innymi użytkownikami bezpośrednio z kart ogłoszeń.</p>
+                    <p>
+                      W zakładce „Moje ogłoszenia” znajdziesz swoje aktywne wpisy wraz z opcjami edycji i usuwania.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    {myListings.length === 0 ? (
+                      <div className="text-sm text-gray-600">
+                        Nie masz jeszcze żadnych ogłoszeń. Użyj przycisku „Dodaj ogłoszenie”, aby opublikować pierwszy wpis.
+                      </div>
+                    ) : (
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        {myListings.map((l) => (
+                          <ListingCard
+                            key={l.id}
+                            listing={l}
+                            onDelete={deleteListing}
+                            onOpen={setSelected}
+                            onMessage={openChat}
+                            currentUserId={currentUserId || undefined}
+                            onEdit={startEditListing}
+                          />
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </Section>
+            </>
+          ) : (
+            <Section title="Wymagane logowanie" right={null}>
               <div className="space-y-3">
-                <p className="text-sm text-gray-700">
-                  Zaloguj się, aby dodać ogłoszenie. Ogłoszenia możesz przeglądać bez logowania.
-                </p>
+                <p className="text-sm text-gray-700">Zaloguj się, aby zobaczyć swój profil i zarządzać ogłoszeniami.</p>
                 <button
                   className="px-4 py-2 rounded-xl bg-neutral-900 text-white hover:opacity-90"
                   onClick={() => setAuthOpen(true)}
@@ -1991,88 +2224,10 @@ export default function App() {
                   Zaloguj się / Zarejestruj
                 </button>
               </div>
-            )}
-          </Section>
-          <Section title="Wskazówki" right={null}>
-            <ul className="list-disc pl-5 text-sm text-gray-700 space-y-1">
-              <li>Sprawdź, czy organizator biegu dopuszcza oficjalny transfer pakietu.</li>
-              <li>Nie publikuj danych wrażliwych. Korzystaj z czatu/e-maila do ustaleń.</li>
-              <li>Unikaj przedpłat bez zabezpieczenia. Wybierz odbiór osobisty lub bezpieczne płatności.</li>
-            </ul>
-          </Section>
-        </div>
-
-        <div className="lg:col-span-2 space-y-6">
-          <Section title="Ogłoszenia" right={null}>
-            <div className="mb-4 flex items-center gap-2">
-              <input value={query} onChange={(e) => setQuery(e.target.value)} className="px-3 py-2 rounded-xl border w-48" placeholder="Szukaj…" />
-              <select value={typeFilter} onChange={(e) => setTypeFilter(/** @type any */(e.target.value))} className="px-3 py-2 rounded-xl border">
-                <option value="all">Wszystkie</option>
-                <option value="sell">Sprzedam</option>
-                <option value="buy">Kupię</option>
-              </select>
-              <select
-                value={distanceFilter}
-                onChange={(e) => setDistanceFilter(/** @type {"all" | Distance} */(e.target.value))}
-                className="px-3 py-2 rounded-xl border"
-              >
-                <option value="all">Wszystkie dystanse</option>
-                {DISTANCES.map((d) => (
-                  <option key={d} value={d}>
-                    {d}
-                  </option>
-                ))}
-              </select>
-              <select value={sort} onChange={(e) => setSort(e.target.value)} className="px-3 py-2 rounded-xl border">
-                <option value="newest">Najnowsze</option>
-                <option value="priceAsc">Cena rosnąco</option>
-                <option value="priceDesc">Cena malejąco</option>
-              </select>
-              {session && (
-                <div className="flex rounded-xl border overflow-hidden text-sm">
-                  <button
-                    type="button"
-                    onClick={() => setOwnershipFilter("all")}
-                    className={clsx(
-                      "px-3 py-2",
-                      ownershipFilter === "all" ? "bg-neutral-900 text-white" : "bg-white hover:bg-neutral-50"
-                    )}
-                  >
-                    Wszystkie
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setOwnershipFilter("mine")}
-                    className={clsx(
-                      "px-3 py-2 border-l",
-                      ownershipFilter === "mine" ? "bg-neutral-900 text-white" : "bg-white hover:bg-neutral-50"
-                    )}
-                  >
-                    Moje
-                  </button>
-                </div>
-              )}
-            </div>
-            {filtered.length === 0 ? (
-              <div className="text-sm text-gray-600">Brak ogłoszeń dla wybranych filtrów.</div>
-            ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {filtered.map((l) => (
-                  <ListingCard
-                    key={l.id}
-                    listing={l}
-                    onDelete={deleteListing}
-                    onOpen={setSelected}
-                    onMessage={openChat}
-                    currentUserId={currentUserId || undefined}
-                    onEdit={startEditListing}
-                  />
-                ))}
-              </div>
-            )}
-          </Section>
-        </div>
-      </main>
+            </Section>
+          )}
+        </main>
+      )}
 
       <DetailModal
         listing={selected}
