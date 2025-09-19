@@ -27,6 +27,9 @@ const DISTANCES = /** @type {const} */ (["5 km", "10 km", "Półmaraton", "Marat
  * @property {"none" | "verified" | "not_found" | "error"} [proof_status]
  * @property {string} [proof_source_url]
  * @property {string} [proof_checked_at]
+ * @property {number} [transferFee]
+ * @property {string} [transferFeeCurrency]
+ * @property {string} [transferDeadline]
  * @property {number} createdAt // epoch ms
  * @property {string} [ownerId]
  * @property {string} [owner_id]
@@ -137,12 +140,18 @@ function saveListings(listings) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(listings));
 }
 
-function toPLN(n) {
+function toCurrency(v, currency = "PLN") {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return "";
   try {
-    return new Intl.NumberFormat("pl-PL", { style: "currency", currency: "PLN" }).format(n ?? 0);
+    return new Intl.NumberFormat("pl-PL", { style: "currency", currency }).format(n);
   } catch {
-    return `${n} PLN`;
+    return `${n} ${currency}`;
   }
+}
+
+function toPLN(n) {
+  return toCurrency(n, "PLN");
 }
 
 const NBHYPHEN = "\u2011"; // nierozdzielający łącznik
@@ -431,8 +440,8 @@ function Field({ label, required, children }) {
   );
 }
 
-/** @param {{ onAdd: (l: Listing)=>void, ownerId?: string, authorDisplayName?: string, editingListing?: Listing | null, onCancelEdit?: ()=>void }} props */
-function ListingForm({ onAdd, ownerId, authorDisplayName, editingListing = null, onCancelEdit }) {
+/** @param {{ onAdd: (l: Listing)=>void, ownerId?: string, authorDisplayName?: string, editingListing?: Listing | null, onCancelEdit?: ()=>void, onOpenTerms?: () => void }} props */
+function ListingForm({ onAdd, ownerId, authorDisplayName, editingListing = null, onCancelEdit, onOpenTerms }) {
   /** @type {[ListingType, Function]} */
   const [type, setType] = useState(/** @type {ListingType} */("sell"));
   const [raceName, setRaceName] = useState("");
@@ -440,6 +449,9 @@ function ListingForm({ onAdd, ownerId, authorDisplayName, editingListing = null,
   const [location, setLocation] = useState("");
   const [distance, setDistance] = useState("");
   const [price, setPrice] = useState("");
+  const [transferFee, setTransferFee] = useState("");
+  const [transferFeeCurrency, setTransferFeeCurrency] = useState("PLN");
+  const [transferDeadline, setTransferDeadline] = useState("");
   const [contact, setContact] = useState("");
   const [description, setDescription] = useState("");
   const [agree, setAgree] = useState(false);
@@ -546,6 +558,9 @@ function ListingForm({ onAdd, ownerId, authorDisplayName, editingListing = null,
     setLocation("");
     setDistance("");
     setPrice("");
+    setTransferFee("");
+    setTransferFeeCurrency("PLN");
+    setTransferDeadline("");
     setContact("");
     setDescription("");
     setAgree(false);
@@ -585,6 +600,13 @@ function ListingForm({ onAdd, ownerId, authorDisplayName, editingListing = null,
         ? String(editingListing.price)
         : ""
     );
+    setTransferFee(
+      typeof editingListing.transferFee === "number" && Number.isFinite(editingListing.transferFee)
+        ? String(editingListing.transferFee)
+        : ""
+    );
+    setTransferFeeCurrency(editingListing.transferFeeCurrency || "PLN");
+    setTransferDeadline(extractDateString(editingListing.transferDeadline) || "");
     setContact(editingListing.contact || "");
     setDescription(editingListing.description || "");
     setAgree(true);
@@ -620,8 +642,14 @@ function ListingForm({ onAdd, ownerId, authorDisplayName, editingListing = null,
     if (!raceName.trim()) return "Podaj nazwę biegu.";
     if (!distance) return "Wybierz dystans biegu.";
     if (!price || isNaN(Number(price)) || Number(price) <= 0) return "Podaj poprawną kwotę.";
+    if (transferFee.trim()) {
+      const parsedFee = Number(transferFee);
+      if (!Number.isFinite(parsedFee) || parsedFee < 0) {
+        return "Podaj poprawną opłatę (nie mniejszą niż 0).";
+      }
+    }
     if (!contact.trim()) return "Podaj kontakt (e-mail/telefon).";
-    if (!agree) return "Musisz zaakceptować regulamin i zasady transferu pakietu.";
+    if (!agree) return "Musisz zaakceptować Regulamin, aby kontynuować.";
     return "";
   }
 
@@ -752,6 +780,10 @@ function ListingForm({ onAdd, ownerId, authorDisplayName, editingListing = null,
         delete l.editionStartDate;
       }
     }
+    const normalizedTransferFee = transferFee.trim() === "" ? NaN : Number(transferFee);
+    l.transferFee = Number.isFinite(normalizedTransferFee) ? normalizedTransferFee : undefined;
+    l.transferFeeCurrency = transferFeeCurrency || "PLN";
+    l.transferDeadline = transferDeadline || "";
     if (type === "sell") {
       const trimmedBib = bib.trim();
       const normalizedProofStatus = proofStatus || (trimmedBib ? "none" : "");
@@ -926,6 +958,43 @@ function ListingForm({ onAdd, ownerId, authorDisplayName, editingListing = null,
         <input inputMode="decimal" value={price} onChange={(e) => setPrice(e.target.value.replace(",", "."))} className="w-full px-3 py-2 rounded-xl border focus:outline-none focus:ring" placeholder="np. 199" />
       </Field>
 
+      <Field label="Opłata za przerejestrowanie">
+        <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+          <input
+            inputMode="decimal"
+            min="0"
+            step="0.01"
+            value={transferFee}
+            onChange={(e) => setTransferFee(e.target.value.replace(",", "."))}
+            className="w-full px-3 py-2 rounded-xl border focus:outline-none focus:ring"
+            placeholder="np. 50"
+          />
+          <select
+            value={transferFeeCurrency}
+            onChange={(e) => setTransferFeeCurrency(e.target.value || "PLN")}
+            className="w-full sm:w-32 px-3 py-2 rounded-xl border focus:outline-none focus:ring"
+          >
+            <option value="PLN">PLN</option>
+            <option value="EUR">EUR</option>
+            <option value="USD">USD</option>
+          </select>
+        </div>
+        {type === "sell" && (
+          <p className="mt-1 text-xs text-emerald-600">
+            Wyróżnij ofertę podając koszt oficjalnego przepisania pakietu.
+          </p>
+        )}
+      </Field>
+
+      <Field label="Zmiana możliwa do">
+        <input
+          type="date"
+          value={transferDeadline}
+          onChange={(e) => setTransferDeadline(e.target.value)}
+          className="w-full px-3 py-2 rounded-xl border focus:outline-none focus:ring whitespace-nowrap tabular-nums"
+        />
+      </Field>
+
       {type === "sell" && (
         <div className="space-y-2">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -990,9 +1059,22 @@ function ListingForm({ onAdd, ownerId, authorDisplayName, editingListing = null,
       </Field>
 
       <label className="flex items-start gap-2 text-sm">
-        <input type="checkbox" checked={agree} onChange={(e) => setAgree(e.target.checked)} className="mt-1" />
+        <input type="checkbox" checked={agree} onChange={(e) => setAgree(e.target.checked)} className="mt-1" required />
         <span>
-          Akceptuję regulamin serwisu oraz oświadczam, że transfer pakietu jest dozwolony przez organizatora biegu.
+          Akceptuję
+          {" "}
+          <a
+            href="#regulamin"
+            className="text-sky-600 underline"
+            onClick={(e) => {
+              e.preventDefault();
+              onOpenTerms?.();
+            }}
+          >
+            Regulamin
+          </a>
+          {" "}
+          serwisu i potwierdzam, że zapoznałem(am) się z zasadami transferu pakietu.
         </span>
       </label>
 
@@ -1453,6 +1535,10 @@ function ListingCard({ listing, onDelete, onOpen, onMessage, currentUserId, onEd
   const ownerId = getListingOwnerId(listing);
   const canMessage = !!ownerId && ownerId !== currentUserId;
   const canManage = !!currentUserId && !!ownerId && ownerId === currentUserId;
+  const hasTransferFee = typeof listing.transferFee === "number" && Number.isFinite(listing.transferFee);
+  const transferFeeLabel = hasTransferFee
+    ? toCurrency(listing.transferFee, listing.transferFeeCurrency || "PLN")
+    : "";
   const listingProofStatus = listing.proof_status || (listing.bib ? "none" : "");
   const listingProofBadge = proofStatusBadgeMeta(listingProofStatus || "none");
   const maskedBib = listing.bib ? maskBib(listing.bib) : "";
@@ -1504,6 +1590,18 @@ function ListingCard({ listing, onDelete, onOpen, onMessage, currentUserId, onEd
           <span className="block text-gray-500">Dystans</span>
           <span>{distanceLabel}</span>
         </div>
+        {hasTransferFee && (
+          <div>
+            <span className="block text-gray-500">Opłata</span>
+            <span>{transferFeeLabel}</span>
+          </div>
+        )}
+        {listing.transferDeadline && (
+          <div>
+            <span className="block text-gray-500">Zmiana możliwa do</span>
+            <span className="whitespace-nowrap tabular-nums">{listing.transferDeadline}</span>
+          </div>
+        )}
       </div>
       {showProof && (
         <div className="flex flex-wrap items-center gap-2 text-xs text-gray-600 mb-2">
@@ -1574,11 +1672,47 @@ function ListingCard({ listing, onDelete, onOpen, onMessage, currentUserId, onEd
   );
 }
 
+function Terms() {
+  return (
+    <section id="regulamin" className="bg-white rounded-2xl shadow-sm p-6 md:p-8 space-y-4">
+      <header className="space-y-1">
+        <h2 className="text-2xl font-semibold">Regulamin korzystania z marketplace</h2>
+        <p className="text-sm text-gray-500">Aktualizacja: 1 czerwca 2024 r.</p>
+      </header>
+      <p className="text-sm text-gray-700">
+        Korzystając z serwisu zobowiązujesz się do przestrzegania poniższych zasad. Regulamin stanowi punkt wyjścia i może
+        być doprecyzowywany wraz z rozwojem projektu.
+      </p>
+      <ol className="list-decimal pl-5 space-y-2 text-sm text-gray-700">
+        <li>Publikuj wyłącznie ogłoszenia dotyczące transferu pakietów startowych na wydarzenia sportowe.</li>
+        <li>Podawaj prawdziwe informacje — w tym dane kontaktowe, cenę oraz ewentualne koszty przepisania pakietu.</li>
+        <li>
+          Sprawdź regulamin organizatora biegu i upewnij się, że transfer jest możliwy w podanym terminie i na wskazanych
+          zasadach.
+        </li>
+        <li>Szanuj pozostałych użytkowników, odpowiadaj na wiadomości i nie publikuj treści naruszających dobre obyczaje.</li>
+        <li>
+          Administrator serwisu może usuwać ogłoszenia lub blokować konta w przypadku naruszenia niniejszych postanowień
+          bądź prawa powszechnie obowiązującego.
+        </li>
+      </ol>
+      <p className="text-xs text-gray-500">
+        Regulamin ma charakter informacyjny i może zostać zaktualizowany. Korzystanie z serwisu oznacza akceptację jego
+        treści.
+      </p>
+    </section>
+  );
+}
+
 function DetailModal({ listing, onClose, onMessage, currentUserId }) {
   if (!listing) return null;
   const isSell = listing.type === "sell";
   const ownerId = getListingOwnerId(listing);
   const canMessage = !!ownerId && ownerId !== currentUserId;
+  const hasTransferFee = typeof listing.transferFee === "number" && Number.isFinite(listing.transferFee);
+  const transferFeeLabel = hasTransferFee
+    ? toCurrency(listing.transferFee, listing.transferFeeCurrency || "PLN")
+    : "";
   const listingProofStatus = listing.proof_status || (listing.bib ? "none" : "");
   const listingProofBadge = proofStatusBadgeMeta(listingProofStatus || "none");
   const maskedBib = listing.bib ? maskBib(listing.bib) : "";
@@ -1624,6 +1758,18 @@ function DetailModal({ listing, onClose, onMessage, currentUserId }) {
             <div>
               <div className="text-gray-500">Dystans</div>
               <div>{listing.distance}</div>
+            </div>
+          )}
+          {hasTransferFee && (
+            <div>
+              <div className="text-gray-500">Opłata</div>
+              <div>{transferFeeLabel}</div>
+            </div>
+          )}
+          {listing.transferDeadline && (
+            <div>
+              <div className="text-gray-500">Zmiana możliwa do</div>
+              <span className="whitespace-nowrap tabular-nums">{listing.transferDeadline}</span>
             </div>
           )}
           <div>
@@ -1903,6 +2049,7 @@ export default function App() {
   const [typeFilter, setTypeFilter] = useState(/** @type {"all"|ListingType} */("all"));
   const [distanceFilter, setDistanceFilter] = useState(/** @type {"all" | Distance} */("all"));
   const [sort, setSort] = useState("newest");
+  const [activeTab, setActiveTab] = useState(/** @type {"listings" | "terms"} */("listings"));
   const [ownershipFilter, setOwnershipFilter] = useState(/** @type {"all" | "mine"} */("all"));
   const [activeView, setActiveView] = useState(/** @type {"market" | "profile"} */("market"));
   const [profileTab, setProfileTab] = useState(/** @type {"info" | "listings" | "alerts"} */("listings"));
@@ -1941,6 +2088,36 @@ export default function App() {
     sessionEmail;
   const purgeMessageTimeoutRef = useRef(/** @type {ReturnType<typeof setTimeout> | null} */ (null));
 
+  const syncTabWithHash = useCallback(() => {
+    if (typeof window === "undefined") return;
+    const hash = window.location.hash?.toLowerCase();
+    if (hash === "#regulamin") {
+      setActiveTab("terms");
+    } else {
+      setActiveTab("listings");
+      setActiveView("market");
+      if (hash !== "#ogloszenia") {
+        window.location.hash = "#ogloszenia";
+      }
+    }
+  }, [setActiveView]);
+
+  const handleTabChange = useCallback(
+    (tab) => {
+      setActiveTab(tab);
+      if (tab === "listings") {
+        setActiveView("market");
+      }
+      if (typeof window !== "undefined") {
+        const targetHash = tab === "terms" ? "#regulamin" : "#ogloszenia";
+        if (window.location.hash !== targetHash) {
+          window.location.hash = targetHash;
+        }
+      }
+    },
+    [setActiveView]
+  );
+
   const showPurgeFeedback = useCallback((count) => {
     if (!count) return;
     if (purgeMessageTimeoutRef.current) {
@@ -1959,6 +2136,16 @@ export default function App() {
       }
     };
   }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return undefined;
+    syncTabWithHash();
+    const handler = () => syncTabWithHash();
+    window.addEventListener("hashchange", handler);
+    return () => {
+      window.removeEventListener("hashchange", handler);
+    };
+  }, [syncTabWithHash]);
 
   const purgeExpiredListings = useCallback(
     (now = new Date()) => {
@@ -2657,44 +2844,6 @@ export default function App() {
     [currentUserId, setActiveView, setProfileTab]
   );
 
-  function exportCSV() {
-    const headers = ["id","typ","bieg","data","lokalizacja","cena","kontakt","opis","dodano"];
-    const rows = listings.map((l) => [
-      l.id,
-      l.type,
-      l.raceName,
-      l.eventDate || "",
-      l.location || "",
-      l.price,
-      l.contact,
-      (l.description || "").replace(/\n/g, " "),
-      new Date(l.createdAt).toISOString()
-    ]);
-
-    // Poprawne „escape’owanie” wartości do CSV (średnik, cudzysłów, nowe linie)
-    const escapeCSV = (val) => {
-      const s = String(val);
-      if (/[;"\n]/.test(s)) {
-        return '"' + s.replace(/"/g, '""') + '"';
-      }
-      return s;
-    };
-
-    const csv = [
-      headers.join(";"),
-      ...rows.map((r) => r.map(escapeCSV).join(";"))
-    ].join("\n");
-
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "ogloszenia.csv";
-    a.click();
-    URL.revokeObjectURL(url);
-  }
-
-
   return (
     <div className="min-h-screen bg-neutral-50 text-neutral-900">
       <header className="sticky top-0 z-10 backdrop-blur bg-white/70 border-b">
@@ -2706,27 +2855,44 @@ export default function App() {
               <p className="text-sm text-gray-600">Dodawaj ogłoszenia: sprzedaj i kup pakiety na biegi</p>
             </div>
           </div>
-          <nav className="flex items-center gap-2 text-sm">
+          <nav className="flex flex-wrap items-center gap-2 text-sm">
             <button
               type="button"
-              onClick={() => setActiveView("market")}
+              onClick={() => handleTabChange("listings")}
               className={clsx(
                 "px-3 py-1.5 rounded-xl border",
-                activeView === "market" ? "bg-neutral-900 text-white border-neutral-900" : "bg-white hover:bg-neutral-50"
+                activeTab === "listings"
+                  ? "bg-neutral-900 text-white border-neutral-900"
+                  : "bg-white hover:bg-neutral-50"
               )}
             >
               Ogłoszenia
             </button>
-            {session && (
+            <button
+              type="button"
+              onClick={() => handleTabChange("terms")}
+              className={clsx(
+                "px-3 py-1.5 rounded-xl border",
+                activeTab === "terms"
+                  ? "bg-neutral-900 text-white border-neutral-900"
+                  : "bg-white hover:bg-neutral-50"
+              )}
+            >
+              Regulamin
+            </button>
+            {session && activeTab === "listings" && (
               <button
                 type="button"
                 onClick={() => {
                   setProfileTab("listings");
+                  handleTabChange("listings");
                   setActiveView("profile");
                 }}
                 className={clsx(
                   "px-3 py-1.5 rounded-xl border",
-                  activeView === "profile" ? "bg-neutral-900 text-white border-neutral-900" : "bg-white hover:bg-neutral-50"
+                  activeView === "profile"
+                    ? "bg-neutral-900 text-white border-neutral-900"
+                    : "bg-white hover:bg-neutral-50"
                 )}
               >
                 Mój profil
@@ -2734,7 +2900,6 @@ export default function App() {
             )}
           </nav>
           <div className="md:ml-auto flex items-center gap-2">
-            <button onClick={exportCSV} className="px-3 py-1.5 rounded-xl border bg-white hover:bg-neutral-50">Eksportuj CSV</button>
             {session ? (
               <div className="flex items-center gap-2">
                 <div className="relative" ref={notificationsRef}>
@@ -2826,26 +2991,275 @@ export default function App() {
         </div>
       </header>
 
-      {activeView === "market" ? (
-        <main className="max-w-6xl mx-auto px-4 py-6 grid grid-cols-1 lg:grid-cols-3 gap-6">
-          <div className="lg:col-span-1">
-            <Section
-              title="Dodaj ogłoszenie"
-              right={<Badge>{session ? "zalogowano" : "konto wymagane"}</Badge>}
-            >
-              {session ? (
-                <ListingForm
-                  onAdd={addListing}
-                  ownerId={session.user.id}
-                  authorDisplayName={authorDisplayName}
-                  editingListing={editingListing}
-                  onCancelEdit={() => setEditingListing(null)}
-                />
-              ) : (
+      {activeTab === "listings" ? (
+        activeView === "market" ? (
+          <main
+            id="ogloszenia"
+            className="max-w-6xl mx-auto px-4 py-6 grid grid-cols-1 lg:grid-cols-3 gap-6"
+          >
+            <div className="lg:col-span-1">
+              <Section
+                title="Dodaj ogłoszenie"
+                right={<Badge>{session ? "zalogowano" : "konto wymagane"}</Badge>}
+              >
+                {session ? (
+                  <ListingForm
+                    onAdd={addListing}
+                    ownerId={session.user.id}
+                    authorDisplayName={authorDisplayName}
+                    editingListing={editingListing}
+                    onCancelEdit={() => setEditingListing(null)}
+                    onOpenTerms={() => handleTabChange("terms")}
+                  />
+                ) : (
+                  <div className="space-y-3">
+                    <p className="text-sm text-gray-700">
+                      Zaloguj się, aby dodać ogłoszenie. Ogłoszenia możesz przeglądać bez logowania.
+                    </p>
+                    <button
+                      className="px-4 py-2 rounded-xl bg-neutral-900 text-white hover:opacity-90"
+                      onClick={() => setAuthOpen(true)}
+                    >
+                      Zaloguj się / Zarejestruj
+                    </button>
+                  </div>
+                )}
+              </Section>
+              <Section title="Wskazówki" right={null}>
+                <ul className="list-disc pl-5 text-sm text-gray-700 space-y-1">
+                  <li>Sprawdź, czy organizator biegu dopuszcza oficjalny transfer pakietu.</li>
+                  <li>Nie publikuj danych wrażliwych. Korzystaj z czatu/e-maila do ustaleń.</li>
+                  <li>Unikaj przedpłat bez zabezpieczenia. Wybierz odbiór osobisty lub bezpieczne płatności.</li>
+                </ul>
+              </Section>
+            </div>
+
+            <div className="lg:col-span-2 space-y-6">
+              <Section title="Ogłoszenia" right={null}>
+                <div className="mb-4 flex items-center gap-2">
+                  <input value={query} onChange={(e) => setQuery(e.target.value)} className="px-3 py-2 rounded-xl border w-48" placeholder="Szukaj…" />
+                  <select value={typeFilter} onChange={(e) => setTypeFilter(/** @type any */(e.target.value))} className="px-3 py-2 rounded-xl border">
+                    <option value="all">Wszystkie</option>
+                    <option value="sell">Sprzedam</option>
+                    <option value="buy">Kupię</option>
+                  </select>
+                  <select
+                    value={distanceFilter}
+                    onChange={(e) => setDistanceFilter(/** @type {"all" | Distance} */(e.target.value))}
+                    className="px-3 py-2 rounded-xl border"
+                  >
+                    <option value="all">Wszystkie dystanse</option>
+                    {DISTANCES.map((d) => (
+                      <option key={d} value={d}>
+                        {d}
+                      </option>
+                    ))}
+                  </select>
+                  <select value={sort} onChange={(e) => setSort(e.target.value)} className="px-3 py-2 rounded-xl border">
+                    <option value="newest">Najnowsze</option>
+                    <option value="priceAsc">Cena rosnąco</option>
+                    <option value="priceDesc">Cena malejąco</option>
+                  </select>
+                  {session && (
+                    <div className="flex rounded-xl border overflow-hidden text-sm">
+                      <button
+                        type="button"
+                        onClick={() => setOwnershipFilter("all")}
+                        className={clsx(
+                          "px-3 py-2",
+                          ownershipFilter === "all" ? "bg-neutral-900 text-white" : "bg-white hover:bg-neutral-50"
+                        )}
+                      >
+                        Wszystkie
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setOwnershipFilter("mine")}
+                        className={clsx(
+                          "px-3 py-2 border-l",
+                          ownershipFilter === "mine" ? "bg-neutral-900 text-white" : "bg-white hover:bg-neutral-50"
+                        )}
+                      >
+                        Moje
+                      </button>
+                    </div>
+                  )}
+                </div>
+                {filtered.length === 0 ? (
+                  <div className="text-sm text-gray-600">Brak ogłoszeń dla wybranych filtrów.</div>
+                ) : (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {filtered.map((l) => (
+                      <ListingCard
+                        key={l.id}
+                        listing={l}
+                        onDelete={deleteListing}
+                        onOpen={setSelected}
+                        onMessage={openChat}
+                        currentUserId={currentUserId || undefined}
+                        onEdit={startEditListing}
+                      />
+                    ))}
+                  </div>
+                )}
+              </Section>
+            </div>
+          </main>
+        ) : (
+          <main id="ogloszenia" className="max-w-5xl mx-auto px-4 py-6 space-y-6">
+            {session ? (
+              <>
+                <Section
+                  title="Mój profil"
+                  right={
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setActiveView("market");
+                        setEditingListing(null);
+                        window.scrollTo({ top: 0, behavior: "smooth" });
+                      }}
+                      className="px-3 py-1.5 rounded-xl border bg-white hover:bg-neutral-50 text-sm"
+                    >
+                      Dodaj ogłoszenie
+                    </button>
+                  }
+                >
+                  <div className="text-sm text-gray-700 space-y-2">
+                    <div>
+                      <div className="text-xs uppercase text-gray-500">Nazwa wyświetlana</div>
+                      <div className="text-base font-semibold text-gray-900">{profileDisplayName || "Brak danych"}</div>
+                    </div>
+                    <div>
+                      <div className="text-xs uppercase text-gray-500">Adres e-mail</div>
+                      <div className="text-sm font-medium text-gray-900">{sessionEmail}</div>
+                    </div>
+                    <p className="text-xs text-gray-500">
+                      Dane pochodzą z Twojego profilu. Zmienisz je w ustawieniach konta Supabase.
+                    </p>
+                  </div>
+                </Section>
+                <Section
+                  title="Zakładki profilu"
+                  right={
+                    <div className="flex rounded-xl border overflow-hidden text-sm">
+                      <button
+                        type="button"
+                        onClick={() => setProfileTab("info")}
+                        className={clsx(
+                          "px-3 py-1.5",
+                          profileTab === "info" ? "bg-neutral-900 text-white" : "bg-white hover:bg-neutral-50"
+                        )}
+                      >
+                        Dane konta
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setProfileTab("listings")}
+                        className={clsx(
+                          "px-3 py-1.5 border-l",
+                          profileTab === "listings" ? "bg-neutral-900 text-white" : "bg-white hover:bg-neutral-50"
+                        )}
+                      >
+                        Moje ogłoszenia
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setProfileTab("alerts")}
+                        className={clsx(
+                          "px-3 py-1.5 border-l",
+                          profileTab === "alerts" ? "bg-neutral-900 text-white" : "bg-white hover:bg-neutral-50"
+                        )}
+                      >
+                        Alerty
+                      </button>
+                    </div>
+                  }
+                >
+                  {profileTab === "info" && (
+                    <div className="text-sm text-gray-700 space-y-2">
+                      <p>Możesz kontaktować się z innymi użytkownikami bezpośrednio z kart ogłoszeń.</p>
+                      <p>
+                        W zakładce „Moje ogłoszenia” znajdziesz swoje aktywne wpisy wraz z opcjami edycji i usuwania.
+                      </p>
+                    </div>
+                  )}
+                  {profileTab === "listings" && (
+                    <div className="space-y-4">
+                      {myListings.length === 0 ? (
+                        <div className="text-sm text-gray-600">
+                          Nie masz jeszcze żadnych ogłoszeń. Użyj przycisku „Dodaj ogłoszenie”, aby opublikować pierwszy wpis.
+                        </div>
+                      ) : (
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                          {myListings.map((l) => (
+                            <ListingCard
+                              key={l.id}
+                              listing={l}
+                              onDelete={deleteListing}
+                              onOpen={setSelected}
+                              onMessage={openChat}
+                              currentUserId={currentUserId || undefined}
+                              onEdit={startEditListing}
+                            />
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  {profileTab === "alerts" && (
+                    <div className="space-y-4">
+                      <div className="flex items-center justify-between gap-3 rounded-2xl border bg-white px-4 py-3 text-sm">
+                        <div>
+                          <div className="font-medium text-gray-900">Powiadomienia e-mail</div>
+                          <div className="text-xs text-gray-500">
+                            {emailOptIn
+                              ? "Dla alertów z zaznaczoną opcją wyślemy e-mail."
+                              : "Włącz, aby otrzymywać e-maile o nowych ogłoszeniach."}
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => requestEmailOptIn(!emailOptIn)}
+                          disabled={emailOptInSaving}
+                          className={clsx(
+                            "px-3 py-1.5 rounded-xl border text-sm",
+                            emailOptIn ? "bg-white hover:bg-neutral-50" : "bg-neutral-900 text-white",
+                            emailOptInSaving && "opacity-50 cursor-not-allowed"
+                          )}
+                        >
+                          {emailOptIn ? "Wyłącz" : "Włącz"}
+                        </button>
+                      </div>
+                      {alertsMessage && <div className="text-sm text-rose-600">{alertsMessage}</div>}
+                      <AlertForm
+                        onSubmit={handleAlertSubmit}
+                        saving={alertSaving}
+                        editingAlert={editingAlert}
+                        onCancelEdit={() => setEditingAlert(null)}
+                        emailOptIn={emailOptIn}
+                        requestEmailOptIn={requestEmailOptIn}
+                      />
+                      <AlertsList
+                        alerts={alerts}
+                        loading={alertsLoading}
+                        onToggle={handleToggleAlert}
+                        onDelete={handleDeleteAlert}
+                        onEdit={(alert) => {
+                          setEditingAlert(alert);
+                          window.scrollTo({ top: 0, behavior: "smooth" });
+                        }}
+                        emailOptIn={emailOptIn}
+                      />
+                      {alertsError && <div className="text-sm text-rose-600">{alertsError}</div>}
+                    </div>
+                  )}
+                </Section>
+              </>
+            ) : (
+              <Section title="Wymagane logowanie" right={null}>
                 <div className="space-y-3">
-                  <p className="text-sm text-gray-700">
-                    Zaloguj się, aby dodać ogłoszenie. Ogłoszenia możesz przeglądać bez logowania.
-                  </p>
+                  <p className="text-sm text-gray-700">Zaloguj się, aby zobaczyć swój profil i zarządzać ogłoszeniami.</p>
                   <button
                     className="px-4 py-2 rounded-xl bg-neutral-900 text-white hover:opacity-90"
                     onClick={() => setAuthOpen(true)}
@@ -2853,252 +3267,13 @@ export default function App() {
                     Zaloguj się / Zarejestruj
                   </button>
                 </div>
-              )}
-            </Section>
-            <Section title="Wskazówki" right={null}>
-              <ul className="list-disc pl-5 text-sm text-gray-700 space-y-1">
-                <li>Sprawdź, czy organizator biegu dopuszcza oficjalny transfer pakietu.</li>
-                <li>Nie publikuj danych wrażliwych. Korzystaj z czatu/e-maila do ustaleń.</li>
-                <li>Unikaj przedpłat bez zabezpieczenia. Wybierz odbiór osobisty lub bezpieczne płatności.</li>
-              </ul>
-            </Section>
-          </div>
-
-          <div className="lg:col-span-2 space-y-6">
-            <Section title="Ogłoszenia" right={null}>
-              <div className="mb-4 flex items-center gap-2">
-                <input value={query} onChange={(e) => setQuery(e.target.value)} className="px-3 py-2 rounded-xl border w-48" placeholder="Szukaj…" />
-                <select value={typeFilter} onChange={(e) => setTypeFilter(/** @type any */(e.target.value))} className="px-3 py-2 rounded-xl border">
-                  <option value="all">Wszystkie</option>
-                  <option value="sell">Sprzedam</option>
-                  <option value="buy">Kupię</option>
-                </select>
-                <select
-                  value={distanceFilter}
-                  onChange={(e) => setDistanceFilter(/** @type {"all" | Distance} */(e.target.value))}
-                  className="px-3 py-2 rounded-xl border"
-                >
-                  <option value="all">Wszystkie dystanse</option>
-                  {DISTANCES.map((d) => (
-                    <option key={d} value={d}>
-                      {d}
-                    </option>
-                  ))}
-                </select>
-                <select value={sort} onChange={(e) => setSort(e.target.value)} className="px-3 py-2 rounded-xl border">
-                  <option value="newest">Najnowsze</option>
-                  <option value="priceAsc">Cena rosnąco</option>
-                  <option value="priceDesc">Cena malejąco</option>
-                </select>
-                {session && (
-                  <div className="flex rounded-xl border overflow-hidden text-sm">
-                    <button
-                      type="button"
-                      onClick={() => setOwnershipFilter("all")}
-                      className={clsx(
-                        "px-3 py-2",
-                        ownershipFilter === "all" ? "bg-neutral-900 text-white" : "bg-white hover:bg-neutral-50"
-                      )}
-                    >
-                      Wszystkie
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setOwnershipFilter("mine")}
-                      className={clsx(
-                        "px-3 py-2 border-l",
-                        ownershipFilter === "mine" ? "bg-neutral-900 text-white" : "bg-white hover:bg-neutral-50"
-                      )}
-                    >
-                      Moje
-                    </button>
-                  </div>
-                )}
-              </div>
-              {filtered.length === 0 ? (
-                <div className="text-sm text-gray-600">Brak ogłoszeń dla wybranych filtrów.</div>
-              ) : (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {filtered.map((l) => (
-                    <ListingCard
-                      key={l.id}
-                      listing={l}
-                      onDelete={deleteListing}
-                      onOpen={setSelected}
-                      onMessage={openChat}
-                      currentUserId={currentUserId || undefined}
-                      onEdit={startEditListing}
-                    />
-                  ))}
-                </div>
-              )}
-            </Section>
-          </div>
-        </main>
+              </Section>
+            )}
+          </main>
+        )
       ) : (
         <main className="max-w-5xl mx-auto px-4 py-6 space-y-6">
-          {session ? (
-            <>
-              <Section
-                title="Mój profil"
-                right={
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setActiveView("market");
-                      setEditingListing(null);
-                      window.scrollTo({ top: 0, behavior: "smooth" });
-                    }}
-                    className="px-3 py-1.5 rounded-xl border bg-white hover:bg-neutral-50 text-sm"
-                  >
-                    Dodaj ogłoszenie
-                  </button>
-                }
-              >
-                <div className="text-sm text-gray-700 space-y-2">
-                  <div>
-                    <div className="text-xs uppercase text-gray-500">Nazwa wyświetlana</div>
-                    <div className="text-base font-semibold text-gray-900">{profileDisplayName || "Brak danych"}</div>
-                  </div>
-                  <div>
-                    <div className="text-xs uppercase text-gray-500">Adres e-mail</div>
-                    <div className="text-sm font-medium text-gray-900">{sessionEmail}</div>
-                  </div>
-                  <p className="text-xs text-gray-500">
-                    Dane pochodzą z Twojego profilu. Zmienisz je w ustawieniach konta Supabase.
-                  </p>
-                </div>
-              </Section>
-              <Section
-                title="Zakładki profilu"
-                right={
-                  <div className="flex rounded-xl border overflow-hidden text-sm">
-                    <button
-                      type="button"
-                      onClick={() => setProfileTab("info")}
-                      className={clsx(
-                        "px-3 py-1.5",
-                        profileTab === "info" ? "bg-neutral-900 text-white" : "bg-white hover:bg-neutral-50"
-                      )}
-                    >
-                      Dane konta
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setProfileTab("listings")}
-                      className={clsx(
-                        "px-3 py-1.5 border-l",
-                        profileTab === "listings" ? "bg-neutral-900 text-white" : "bg-white hover:bg-neutral-50"
-                      )}
-                    >
-                      Moje ogłoszenia
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setProfileTab("alerts")}
-                      className={clsx(
-                        "px-3 py-1.5 border-l",
-                        profileTab === "alerts" ? "bg-neutral-900 text-white" : "bg-white hover:bg-neutral-50"
-                      )}
-                    >
-                      Alerty
-                    </button>
-                  </div>
-                }
-              >
-                {profileTab === "info" && (
-                  <div className="text-sm text-gray-700 space-y-2">
-                    <p>Możesz kontaktować się z innymi użytkownikami bezpośrednio z kart ogłoszeń.</p>
-                    <p>
-                      W zakładce „Moje ogłoszenia” znajdziesz swoje aktywne wpisy wraz z opcjami edycji i usuwania.
-                    </p>
-                  </div>
-                )}
-                {profileTab === "listings" && (
-                  <div className="space-y-4">
-                    {myListings.length === 0 ? (
-                      <div className="text-sm text-gray-600">
-                        Nie masz jeszcze żadnych ogłoszeń. Użyj przycisku „Dodaj ogłoszenie”, aby opublikować pierwszy wpis.
-                      </div>
-                    ) : (
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        {myListings.map((l) => (
-                          <ListingCard
-                            key={l.id}
-                            listing={l}
-                            onDelete={deleteListing}
-                            onOpen={setSelected}
-                            onMessage={openChat}
-                            currentUserId={currentUserId || undefined}
-                            onEdit={startEditListing}
-                          />
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                )}
-                {profileTab === "alerts" && (
-                  <div className="space-y-4">
-                    <div className="flex items-center justify-between gap-3 rounded-2xl border bg-white px-4 py-3 text-sm">
-                      <div>
-                        <div className="font-medium text-gray-900">Powiadomienia e-mail</div>
-                        <div className="text-xs text-gray-500">
-                          {emailOptIn
-                            ? "Dla alertów z zaznaczoną opcją wyślemy e-mail."
-                            : "Włącz, aby otrzymywać e-maile o nowych ogłoszeniach."}
-                        </div>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => requestEmailOptIn(!emailOptIn)}
-                        disabled={emailOptInSaving}
-                        className={clsx(
-                          "px-3 py-1.5 rounded-xl border text-sm",
-                          emailOptIn ? "bg-white hover:bg-neutral-50" : "bg-neutral-900 text-white",
-                          emailOptInSaving && "opacity-50 cursor-not-allowed"
-                        )}
-                      >
-                        {emailOptIn ? "Wyłącz" : "Włącz"}
-                      </button>
-                    </div>
-                    {alertsMessage && <div className="text-sm text-rose-600">{alertsMessage}</div>}
-                    <AlertForm
-                      onSubmit={handleAlertSubmit}
-                      saving={alertSaving}
-                      editingAlert={editingAlert}
-                      onCancelEdit={() => setEditingAlert(null)}
-                      emailOptIn={emailOptIn}
-                      requestEmailOptIn={requestEmailOptIn}
-                    />
-                    <AlertsList
-                      alerts={alerts}
-                      loading={alertsLoading}
-                      onToggle={handleToggleAlert}
-                      onDelete={handleDeleteAlert}
-                      onEdit={(alert) => {
-                        setEditingAlert(alert);
-                        window.scrollTo({ top: 0, behavior: "smooth" });
-                      }}
-                      emailOptIn={emailOptIn}
-                    />
-                    {alertsError && <div className="text-sm text-rose-600">{alertsError}</div>}
-                  </div>
-                )}
-              </Section>
-            </>
-          ) : (
-            <Section title="Wymagane logowanie" right={null}>
-              <div className="space-y-3">
-                <p className="text-sm text-gray-700">Zaloguj się, aby zobaczyć swój profil i zarządzać ogłoszeniami.</p>
-                <button
-                  className="px-4 py-2 rounded-xl bg-neutral-900 text-white hover:opacity-90"
-                  onClick={() => setAuthOpen(true)}
-                >
-                  Zaloguj się / Zarejestruj
-                </button>
-              </div>
-            </Section>
-          )}
+          <Terms />
         </main>
       )}
 
