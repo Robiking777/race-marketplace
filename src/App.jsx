@@ -1628,7 +1628,7 @@ function ListingCard({ listing, onDelete, onOpen, onMessage, currentUserId, onEd
           </span>
         </div>
       )}
-      <div className="flex items-center justify-between gap-3 mb-2">
+      <div className="flex items-start justify-between gap-3 mb-2">
         <div className="flex items-center gap-2 flex-wrap">
           <Badge color={isSell ? "bg-emerald-100 text-emerald-800" : "bg-sky-100 text-sky-800"}>{isSell ? "SPRZEDAM" : "KUPIĘ"}</Badge>
           <h3 className="font-semibold text-lg">{listing.raceName}</h3>
