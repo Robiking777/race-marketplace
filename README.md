@@ -37,3 +37,24 @@ Wymagane zmienne środowiskowe (Vercel):
 - Dev: `npm install` → `npm run dev`
 - Build: `npm run build`
 - Preview: `npm run preview`
+
+## Jak uruchomić scraper kalendarza biegów
+
+Skrypt `scripts/scrape-maratonypolskie.js` pobiera wydarzenia biegowe z kalendarza Maratonypolskie.pl w zakresie od
+1.10.2025 do 31.12.2026 i uzupełnia tabele `events` oraz `event_editions` w Supabase.
+
+1. Skonfiguruj zmienne środowiskowe (lokalnie w `.env.local` lub na Vercel w **Project → Settings → Environment Variables**):
+   - `SUPABASE_URL`
+   - `SUPABASE_SERVICE_ROLE`
+2. Zainstaluj zależności: `npm install`.
+3. Uruchom scraper: `npm run scrape:mp`.
+
+Skrypt wysyła żądania co ok. 800 ms z nagłówkiem `User-Agent: RaceMarketplaceBot/1.0 (contact: admin@racemarketplace.pl)` i
+wykonuje idempotentne upserty – wielokrotne uruchomienie nie duplikuje danych. W logach znajdziesz liczbę przetworzonych
+stron, wpisów oraz statystyki upsertów.
+
+### Integracja z Vercel Cron (opcjonalnie)
+
+Repozytorium zawiera plik `vercel.json` oraz endpoint `api/run-scraper.js`. Po wdrożeniu na Vercel cron raz w tygodniu
+(poniedziałek, godz. 03:00 UTC) wywoła `GET /api/run-scraper`, który uruchamia ten sam skrypt. W razie potrzeby możesz
+zmienić harmonogram lub wywołać endpoint ręcznie (np. `POST /api/run-scraper`).
