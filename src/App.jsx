@@ -1628,19 +1628,23 @@ function ListingCard({ listing, onDelete, onOpen, onMessage, currentUserId, onEd
           </span>
         </div>
       )}
-      <div className="flex items-start justify-between gap-3 mb-2">
-        <div className="flex items-center gap-2 flex-wrap">
-          <Badge color={isSell ? "bg-emerald-100 text-emerald-800" : "bg-sky-100 text-sky-800"}>{isSell ? "SPRZEDAM" : "KUPIĘ"}</Badge>
-          <h3 className="font-semibold text-lg">{listing.raceName}</h3>
-          {listing.edition_id && (
-            <span className="text-xs text-gray-500">
-              {(listing.editionEventName || listing.raceName) + (listing.editionYear ? ` — ${listing.editionYear}` : "")}
-            </span>
-          )}
+      <div className="mb-2">
+        <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+          <span className="flex-shrink-0">
+            <Badge color={isSell ? "bg-emerald-100 text-emerald-800" : "bg-sky-100 text-sky-800"}>{
+              isSell ? "SPRZEDAM" : "KUPIĘ"
+            }</Badge>
+          </span>
+          <h3 className="font-semibold text-lg leading-tight flex-1 min-w-0">{listing.raceName}</h3>
+          <div className="ml-auto whitespace-nowrap text-right font-semibold leading-tight flex-shrink-0">
+            {toPLN(listing.price)}
+          </div>
         </div>
-        <div className="text-right">
-          <div className="font-semibold">{toPLN(listing.price)}</div>
-        </div>
+        {listing.edition_id && (
+          <div className="text-xs text-gray-500 mt-1">
+            {(listing.editionEventName || listing.raceName) + (listing.editionYear ? ` — ${listing.editionYear}` : "")}
+          </div>
+        )}
       </div>
       <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-sm text-gray-600 mb-2">
         <div>
@@ -1758,19 +1762,31 @@ function DetailModal({ listing, onClose, onMessage, currentUserId }) {
             </span>
           </div>
         )}
-        <div className="flex items-start justify-between gap-3 mb-3">
-          <div className="flex items-center gap-2">
-            <span className={"px-2 py-0.5 rounded-full text-xs font-medium " + (isSell ? "bg-emerald-100 text-emerald-800" : "bg-sky-100 text-sky-800")}>
-              {isSell ? "SPRZEDAM" : "KUPIĘ"}
-            </span>
-            <h3 className="text-xl font-semibold">{listing.raceName}</h3>
+        <div className="flex flex-wrap items-start justify-between gap-3 mb-3">
+          <div className="flex-1 min-w-0">
+            <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+              <span
+                className={
+                  "px-2 py-0.5 rounded-full text-xs font-medium " +
+                  (isSell ? "bg-emerald-100 text-emerald-800" : "bg-sky-100 text-sky-800")
+                }
+              >
+                {isSell ? "SPRZEDAM" : "KUPIĘ"}
+              </span>
+              <h3 className="text-xl font-semibold leading-tight flex-1 min-w-0">{listing.raceName}</h3>
+              <div className="ml-auto whitespace-nowrap text-right text-2xl font-semibold leading-tight flex-shrink-0">
+                {toPLN(listing.price)}
+              </div>
+            </div>
+            {listing.edition_id && (
+              <div className="text-xs text-gray-500 mt-1">
+                {(listing.editionEventName || listing.raceName) + (listing.editionYear ? ` — ${listing.editionYear}` : "")}
+              </div>
+            )}
           </div>
           <button className="px-2 py-1 rounded-lg bg-neutral-100 hover:bg-neutral-200" onClick={onClose}>
             Zamknij
           </button>
-        </div>
-        <div className="mb-3">
-          <div className="text-2xl font-semibold">{toPLN(listing.price)}</div>
         </div>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm text-gray-700 mb-3">
           <div>
