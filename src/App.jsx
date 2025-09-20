@@ -19,6 +19,8 @@ const DISTANCE_SUGGESTIONS = /** @type {const} */ ([
   "100 km",
 ]);
 
+const CONTACT_KINDS = /** @type {const} */ (["Pomysł", "Problem", "Błąd", "Współpraca"]);
+
 /** @typedef {string} Distance */
 
 /**
@@ -2003,6 +2005,287 @@ function Terms() {
   );
 }
 
+function isBetaFreeEnabled() {
+  if (typeof window !== "undefined" && window.FLAGS && window.FLAGS.BETA_FREE) {
+    return true;
+  }
+  if (typeof globalThis !== "undefined" && globalThis.FLAGS && globalThis.FLAGS.BETA_FREE) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * @param {{
+ *   session: any,
+ *   profileDisplayName: string,
+ *   sessionEmail: string,
+ *   onShowToast?: (message: string) => void,
+ *   onNavigateListings: () => void,
+ * }} props
+ */
+function ContactPage({ session, profileDisplayName, sessionEmail, onShowToast, onNavigateListings }) {
+  const isLoggedIn = !!session?.user;
+  const [kind, setKind] = useState(CONTACT_KINDS[0]);
+  const [subject, setSubject] = useState("");
+  const [message, setMessage] = useState("");
+  const [email, setEmail] = useState(sessionEmail || "");
+  const [displayName, setDisplayName] = useState(profileDisplayName || "");
+  const [agree, setAgree] = useState(false);
+  const [company, setCompany] = useState("");
+  const [status, setStatus] = useState(/** @type {"idle" | "submitting" | "success" | "error"} */("idle"));
+  const [error, setError] = useState("");
+  const isSubmitting = status === "submitting";
+  const isBetaFree = useMemo(() => isBetaFreeEnabled(), []);
+
+  useEffect(() => {
+    if (sessionEmail) {
+      setEmail((prev) => prev || sessionEmail);
+    }
+  }, [sessionEmail]);
+
+  useEffect(() => {
+    if (profileDisplayName) {
+      setDisplayName((prev) => prev || profileDisplayName);
+    }
+  }, [profileDisplayName]);
+
+  const emailRequired = !isLoggedIn;
+
+  const handleSubmit = useCallback(
+    async (event) => {
+      event.preventDefault();
+      setError("");
+
+      const trimmedSubject = subject.trim();
+      const trimmedBody = message.trim();
+      const trimmedEmail = email.trim();
+      const trimmedDisplayName = displayName.trim();
+      const normalizedKind = CONTACT_KINDS.includes(kind) ? kind : CONTACT_KINDS[0];
+      const fallbackEmail = isLoggedIn ? (sessionEmail || "").trim() : "";
+      const fallbackDisplayName = isLoggedIn ? (profileDisplayName || "").trim() : "";
+
+      if (!trimmedSubject) {
+        setError("Podaj temat wiadomości.");
+        return;
+      }
+      if (trimmedBody.length < 20) {
+        setError("Wiadomość musi mieć co najmniej 20 znaków.");
+        return;
+      }
+      if (emailRequired && !trimmedEmail) {
+        setError("Podaj adres e-mail, abyśmy mogli odpowiedzieć.");
+        return;
+      }
+      if (trimmedEmail && !/^\S+@\S+\.\S+$/.test(trimmedEmail)) {
+        setError("Podaj poprawny adres e-mail.");
+        return;
+      }
+      if (!agree) {
+        setError("Musisz wyrazić zgodę na kontakt.");
+        return;
+      }
+
+      setStatus("submitting");
+
+      const currentUrl =
+        typeof window !== "undefined"
+          ? `${window.location.pathname}${window.location.search}${window.location.hash}`
+          : "";
+
+      try {
+        const res = await fetch("/api/contact", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-user-id": session?.user?.id || "",
+          },
+          body: JSON.stringify({
+            subject: trimmedSubject,
+            body: trimmedBody,
+            kind: normalizedKind,
+            email: trimmedEmail || fallbackEmail,
+            displayName: trimmedDisplayName || fallbackDisplayName,
+            urlPath: currentUrl,
+            honeypot: company.trim(),
+          }),
+        });
+        const data = await res.json().catch(() => null);
+        if (!res.ok || !data?.ok) {
+          const messageText = data?.error || "Nie udało się wysłać wiadomości.";
+          throw new Error(messageText);
+        }
+
+        setKind(CONTACT_KINDS[0]);
+        setSubject("");
+        setMessage("");
+        setCompany("");
+        setAgree(false);
+        setStatus("success");
+        if (!isLoggedIn) {
+          setEmail("");
+          setDisplayName("");
+        } else {
+          setEmail(fallbackEmail);
+          setDisplayName(fallbackDisplayName);
+        }
+        if (onShowToast) {
+          onShowToast("Dzięki! Odpowiemy wkrótce");
+        }
+      } catch (err) {
+        console.error("contact submit failed", err);
+        setStatus("error");
+        setError(err?.message ? String(err.message) : "Nie udało się wysłać wiadomości.");
+      }
+    },
+    [
+      agree,
+      company,
+      displayName,
+      email,
+      emailRequired,
+      isLoggedIn,
+      kind,
+      message,
+      onShowToast,
+      profileDisplayName,
+      session,
+      sessionEmail,
+      subject,
+    ]
+  );
+
+  return (
+    <Section title="Skontaktuj się z nami" right={null}>
+      <div className="space-y-4 text-sm text-gray-700">
+        <p>
+          Masz pytanie, pomysł na rozwój marketplace lub zauważyłeś problem? Napisz do nas, odpowiemy najszybciej jak
+          to możliwe.
+        </p>
+        {isBetaFree && (
+          <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
+            Beta: odpowiedzi mogą zająć do 48h
+          </div>
+        )}
+      </div>
+      {status === "success" && (
+        <div className="mt-4 space-y-2 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
+          <div className="font-medium">Wiadomość została wysłana.</div>
+          <p>
+            Dziękujemy za kontakt! Postaramy się wrócić z odpowiedzią jak najszybciej. W międzyczasie możesz wrócić do
+            ogłoszeń.
+          </p>
+          <button
+            type="button"
+            onClick={onNavigateListings}
+            className="inline-flex w-auto items-center justify-center rounded-lg bg-neutral-900 px-3 py-1.5 text-xs font-medium text-white hover:opacity-90"
+          >
+            Zobacz ogłoszenia
+          </button>
+        </div>
+      )}
+      <form onSubmit={handleSubmit} className="mt-6 space-y-4">
+        <div className="grid gap-4 md:grid-cols-2">
+          <Field label="Typ zgłoszenia" required>
+            <select
+              value={kind}
+              onChange={(event) => {
+                const value = event.target.value;
+                setKind(CONTACT_KINDS.includes(value) ? value : CONTACT_KINDS[0]);
+              }}
+              className="w-full rounded-xl border px-3 py-2"
+            >
+              {CONTACT_KINDS.map((option) => (
+                <option key={option} value={option}>
+                  {option}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Temat" required>
+            <input
+              value={subject}
+              onChange={(event) => setSubject(event.target.value.slice(0, 160))}
+              className="w-full rounded-xl border px-3 py-2"
+              placeholder="Krótki temat wiadomości"
+              maxLength={160}
+              required
+            />
+          </Field>
+        </div>
+        <Field label="Wiadomość" required>
+          <textarea
+            value={message}
+            onChange={(event) => setMessage(event.target.value.slice(0, 4000))}
+            className="w-full rounded-xl border px-3 py-2"
+            rows={6}
+            minLength={20}
+            placeholder="Opisz swój pomysł, zgłoszenie lub problem"
+            maxLength={4000}
+            required
+          />
+        </Field>
+        <div className="grid gap-4 md:grid-cols-2">
+          <Field label="E-mail do kontaktu" required={emailRequired}>
+            <input
+              type="email"
+              value={email}
+              onChange={(event) => setEmail(event.target.value.slice(0, 160))}
+              className="w-full rounded-xl border px-3 py-2"
+              placeholder="twojadres@example.com"
+              autoComplete="email"
+              maxLength={160}
+              required={emailRequired}
+            />
+          </Field>
+          <Field label="Nazwa wyświetlana (opcjonalnie)" required={false}>
+            <input
+              value={displayName}
+              onChange={(event) => setDisplayName(event.target.value.slice(0, 160))}
+              className="w-full rounded-xl border px-3 py-2"
+              placeholder="Jak mamy się do Ciebie zwracać?"
+              autoComplete="name"
+              maxLength={160}
+            />
+          </Field>
+        </div>
+        <div className="hidden" aria-hidden>
+          <label>
+            Firma
+            <input
+              name="company"
+              value={company}
+              onChange={(event) => setCompany(event.target.value)}
+              tabIndex={-1}
+              autoComplete="off"
+            />
+          </label>
+        </div>
+        <label className="flex items-start gap-2 text-sm text-gray-700">
+          <input
+            type="checkbox"
+            checked={agree}
+            onChange={(event) => setAgree(event.target.checked)}
+            required
+            className="mt-1 h-4 w-4 rounded border-gray-300"
+          />
+          <span>Zgadzam się na kontakt w sprawie tej wiadomości.</span>
+        </label>
+        {error && <div className="text-sm text-rose-600">{error}</div>}
+        <div className="flex items-center gap-3">
+          <button
+            type="submit"
+            disabled={isSubmitting}
+            className="rounded-xl bg-neutral-900 px-4 py-2 text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {isSubmitting ? "Wysyłam…" : "Wyślij wiadomość"}
+          </button>
+        </div>
+      </form>
+    </Section>
+  );
+}
+
 function DetailModal({ listing, onClose, onMessage, currentUserId, viewerDisplayName }) {
   if (!listing) return null;
   const isSell = listing.type === "sell";
@@ -2379,7 +2662,7 @@ export default function App() {
   const [typeFilter, setTypeFilter] = useState(/** @type {"all"|ListingType} */("all"));
   const [distanceFilter, setDistanceFilter] = useState(/** @type {"all" | Distance} */("all"));
   const [sort, setSort] = useState("newest");
-  const [activeTab, setActiveTab] = useState(/** @type {"listings" | "terms"} */("listings"));
+  const [activeTab, setActiveTab] = useState(/** @type {"listings" | "terms" | "contact"} */("listings"));
   const [activeView, setActiveView] = useState(/** @type {"market" | "profile" | "messages"} */("market"));
   const [profileTab, setProfileTab] = useState(/** @type {"info" | "listings" | "alerts"} */("listings"));
   const [selected, setSelected] = useState/** @type {(Listing|null)} */(null);
@@ -2440,6 +2723,8 @@ export default function App() {
     const hash = window.location.hash?.toLowerCase();
     if (hash === "#regulamin") {
       setActiveTab("terms");
+    } else if (hash === "#kontakt") {
+      setActiveTab("contact");
     } else {
       setActiveTab("listings");
       setActiveView("market");
@@ -2450,13 +2735,14 @@ export default function App() {
   }, [setActiveView]);
 
   const handleTabChange = useCallback(
+    /** @param {"listings" | "terms" | "contact"} tab */
     (tab) => {
       setActiveTab(tab);
       if (tab === "listings") {
         setActiveView("market");
       }
       if (typeof window !== "undefined") {
-        const targetHash = tab === "terms" ? "#regulamin" : "#ogloszenia";
+        const targetHash = tab === "terms" ? "#regulamin" : tab === "contact" ? "#kontakt" : "#ogloszenia";
         if (window.location.hash !== targetHash) {
           window.location.hash = targetHash;
         }
@@ -3316,6 +3602,18 @@ export default function App() {
             >
               Regulamin
             </button>
+            <button
+              type="button"
+              onClick={() => handleTabChange("contact")}
+              className={clsx(
+                "px-3 py-1.5 rounded-xl border",
+                activeTab === "contact"
+                  ? "bg-neutral-900 text-white border-neutral-900"
+                  : "bg-white hover:bg-neutral-50"
+              )}
+            >
+              Kontakt
+            </button>
             {session && activeTab === "listings" && (
               <button
                 type="button"
@@ -3854,6 +4152,16 @@ export default function App() {
             )}
           </main>
         )
+      ) : activeTab === "contact" ? (
+        <main className="max-w-3xl mx-auto px-4 py-6 space-y-6">
+          <ContactPage
+            session={session}
+            profileDisplayName={profileDisplayName}
+            sessionEmail={sessionEmail}
+            onShowToast={showToast}
+            onNavigateListings={() => handleTabChange("listings")}
+          />
+        </main>
       ) : (
         <main className="max-w-5xl mx-auto px-4 py-6 space-y-6">
           <Terms />
@@ -3878,10 +4186,19 @@ export default function App() {
       />
 
       <footer className="max-w-6xl mx-auto px-4 pb-12 pt-2 text-xs text-gray-500">
-        <p>
-          Uwaga prawna: wiele wydarzeń pozwala na oficjalny transfer pakietu w określonych terminach — publikując ogłoszenie,
-          upewnij się, że działasz zgodnie z regulaminem organizatora.
-        </p>
+        <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+          <p>
+            Uwaga prawna: wiele wydarzeń pozwala na oficjalny transfer pakietu w określonych terminach — publikując
+            ogłoszenie, upewnij się, że działasz zgodnie z regulaminem organizatora.
+          </p>
+          <button
+            type="button"
+            onClick={() => handleTabChange("contact")}
+            className="text-xs font-medium text-neutral-700 underline underline-offset-2 hover:text-neutral-900"
+          >
+            Kontakt
+          </button>
+        </div>
       </footer>
 
       {purgeMessage && (
