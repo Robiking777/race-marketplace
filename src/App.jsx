@@ -1838,6 +1838,8 @@ function ListingCard({ listing, onDelete, onOpen, onMessage, currentUserId, onEd
       listingProofCheckedLabel = parsed.toLocaleString("pl-PL");
     }
   }
+  const authorLabel =
+    listing.author_display_name || (ownerId && ownerId === currentUserId ? viewerDisplayName : "");
   return (
     <div
       id={listing.id}
