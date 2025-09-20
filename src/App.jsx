@@ -2251,6 +2251,9 @@ function AuthModal({ open, onClose }) {
   const [displayName, setDisplayName] = useState("");
   const [loading, setLoading] = useState(false);
   const [msg, setMsg] = useState("");
+  const [pendingVerifyEmail, setPendingVerifyEmail] = useState(/** @type {string | null} */(null));
+  const [resendLoading, setResendLoading] = useState(false);
+  const [resendMsg, setResendMsg] = useState("");
 
   if (!open) return null;
 
@@ -2261,6 +2264,9 @@ function AuthModal({ open, onClose }) {
     setDisplayName("");
     setMsg("");
     setLoading(false);
+    setPendingVerifyEmail(null);
+    setResendLoading(false);
+    setResendMsg("");
     onClose();
   }
 
@@ -2268,13 +2274,30 @@ function AuthModal({ open, onClose }) {
     e.preventDefault();
     setLoading(true);
     setMsg("");
+    setResendMsg("");
     const trimmedDisplayName = displayName.trim();
     try {
       if (mode === "login") {
-        const { error } = await supabase.auth.signInWithPassword({ email, password });
-        if (error) throw error;
-        setMsg("Zalogowano.");
-        handleClose();
+        const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+        if (error) {
+          const message = error?.message || "";
+          const description = error?.error_description || "";
+          const status = typeof error?.status === "number" ? error.status : null;
+          const needsConfirmation =
+            /not.*confirm|confirm.*email/i.test(message) ||
+            /not.*confirm|confirm.*email/i.test(description) ||
+            ((status === 400 || status === 401) && /not.*confirm|confirm.*email/i.test(`${message} ${description}`));
+          if (needsConfirmation) {
+            setPendingVerifyEmail(email);
+            setMsg("Twój adres e-mail nie został jeszcze potwierdzony.");
+            return;
+          }
+          throw error;
+        }
+        if (data?.session) {
+          setMsg("Zalogowano.");
+          handleClose();
+        }
         return;
       }
 
@@ -2291,7 +2314,13 @@ function AuthModal({ open, onClose }) {
       });
       if (error) throw error;
 
-      if (data?.user) {
+      if (data?.user && !data?.session) {
+        setPendingVerifyEmail(email);
+        setMsg("");
+        return;
+      }
+
+      if (data?.user && data?.session) {
         const { error: profileError } = await supabase.from("profiles").upsert({
           id: data.user.id,
           display_name: trimmedDisplayName,
@@ -2299,14 +2328,32 @@ function AuthModal({ open, onClose }) {
         if (profileError) {
           console.error(profileError);
         }
+        handleClose();
+        return;
       }
-
-      setMsg("Konto utworzone. Możesz się zalogować.");
     } catch (err) {
       const message = err?.message || "Nie udało się przetworzyć żądania.";
       setMsg(message);
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function resendVerification(emailAddress) {
+    setResendLoading(true);
+    setResendMsg("");
+    try {
+      const { error } = await supabase.auth.resend({
+        type: "signup",
+        email: emailAddress,
+        options: { emailRedirectTo: typeof window !== "undefined" ? window.location.origin : undefined },
+      });
+      if (error) throw error;
+      setResendMsg("Wysłano ponownie. Sprawdź skrzynkę (także SPAM).");
+    } catch (e) {
+      setResendMsg("Nie udało się wysłać ponownie. Spróbuj za chwilę.");
+    } finally {
+      setResendLoading(false);
     }
   }
 
@@ -2317,63 +2364,115 @@ function AuthModal({ open, onClose }) {
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between mb-3">
-          <h3 className="text-lg font-semibold">{mode === "login" ? "Zaloguj się" : "Załóż konto"}</h3>
+          <h3 className="text-lg font-semibold">
+            {pendingVerifyEmail
+              ? "Sprawdź skrzynkę pocztową"
+              : mode === "login"
+              ? "Zaloguj się"
+              : "Załóż konto"}
+          </h3>
           <button className="px-2 py-1 rounded-lg bg-neutral-100 hover:bg-neutral-200" onClick={handleClose}>
             Zamknij
           </button>
         </div>
-        <form onSubmit={submit} className="space-y-3">
-          <label className="block">
-            <span className="block text-sm text-gray-600 mb-1">E-mail</span>
-            <input
-              className="w-full px-3 py-2 rounded-xl border"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              required
-            />
-          </label>
-          {mode === "register" && (
-            <label className="block">
-              <span className="block text-sm text-gray-600 mb-1">Wyświetlana nazwa (pseudonim)</span>
-              <input
-                className="w-full px-3 py-2 rounded-xl border"
-                value={displayName}
-                onChange={(e) => setDisplayName(e.target.value)}
-                minLength={3}
-                maxLength={30}
-                required
-              />
-            </label>
-          )}
-          <label className="block">
-            <span className="block text-sm text-gray-600 mb-1">Hasło</span>
-            <input
-              type="password"
-              className="w-full px-3 py-2 rounded-xl border"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              required
-            />
-          </label>
-          {msg && <div className="text-sm text-gray-600">{msg}</div>}
-          <button
-            disabled={loading}
-            className="w-full px-4 py-2 rounded-xl bg-neutral-900 text-white hover:opacity-90"
-          >
-            {loading ? "Przetwarzam…" : mode === "login" ? "Zaloguj się" : "Zarejestruj"}
-          </button>
-        </form>
-        <div className="text-xs text-gray-500 mt-3">
-          {mode === "login" ? (
-            <button className="underline" onClick={() => setMode("register")}>
-              Nie masz konta? Zarejestruj się
+        {pendingVerifyEmail ? (
+          <div className="space-y-3">
+            {msg && <p className="text-sm text-gray-600">{msg}</p>}
+            <p>
+              Wysłaliśmy link aktywacyjny na <b>{pendingVerifyEmail}</b>. Kliknij go, a potem zaloguj się.
+            </p>
+            <p className="text-sm text-gray-500">
+              Link jest ważny przez kilka godzin. Jeśli nie widzisz wiadomości — sprawdź SPAM/„Oferty”.
+            </p>
+            <button
+              onClick={() => resendVerification(pendingVerifyEmail)}
+              disabled={resendLoading}
+              className="px-3 py-2 rounded-md bg-black text-white disabled:opacity-50"
+            >
+              {resendLoading ? "Wysyłanie…" : "Wyślij ponownie e-mail potwierdzający"}
             </button>
-          ) : (
-            <button className="underline" onClick={() => setMode("login")}>
-              Masz konto? Zaloguj się
+            {resendMsg && <p className="text-sm text-gray-600">{resendMsg}</p>}
+            <button
+              className="text-sm underline"
+              onClick={() => {
+                setPendingVerifyEmail(null);
+                setResendMsg("");
+                setResendLoading(false);
+                setMsg("");
+              }}
+            >
+              Zmień adres e-mail
             </button>
-          )}
-        </div>
+          </div>
+        ) : (
+          <>
+            <form onSubmit={submit} className="space-y-3">
+              <label className="block">
+                <span className="block text-sm text-gray-600 mb-1">E-mail</span>
+                <input
+                  className="w-full px-3 py-2 rounded-xl border"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  required
+                />
+              </label>
+              {mode === "register" && (
+                <label className="block">
+                  <span className="block text-sm text-gray-600 mb-1">Wyświetlana nazwa (pseudonim)</span>
+                  <input
+                    className="w-full px-3 py-2 rounded-xl border"
+                    value={displayName}
+                    onChange={(e) => setDisplayName(e.target.value)}
+                    minLength={3}
+                    maxLength={30}
+                    required
+                  />
+                </label>
+              )}
+              <label className="block">
+                <span className="block text-sm text-gray-600 mb-1">Hasło</span>
+                <input
+                  type="password"
+                  className="w-full px-3 py-2 rounded-xl border"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  required
+                />
+              </label>
+              {msg && <div className="text-sm text-gray-600">{msg}</div>}
+              <button
+                type="submit"
+                disabled={loading}
+                className="w-full px-4 py-2 rounded-xl bg-neutral-900 text-white hover:opacity-90 disabled:opacity-50"
+              >
+                {loading ? "Przetwarzam…" : mode === "login" ? "Zaloguj się" : "Zarejestruj"}
+              </button>
+            </form>
+            <div className="text-xs text-gray-500 mt-3">
+              {mode === "login" ? (
+                <button
+                  className="underline"
+                  onClick={() => {
+                    setMode("register");
+                    setMsg("");
+                  }}
+                >
+                  Nie masz konta? Zarejestruj się
+                </button>
+              ) : (
+                <button
+                  className="underline"
+                  onClick={() => {
+                    setMode("login");
+                    setMsg("");
+                  }}
+                >
+                  Masz konto? Zaloguj się
+                </button>
+              )}
+            </div>
+          </>
+        )}
       </div>
     </div>
   );
