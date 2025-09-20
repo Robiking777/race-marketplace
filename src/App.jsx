@@ -2842,7 +2842,6 @@ export default function App() {
 
   useEffect(() => {
     if (!currentUserId) {
-      setOwnershipFilter("all");
       setEditingListing(null);
     }
   }, [currentUserId]);
