@@ -154,7 +154,14 @@ function loadListings() {
 
 /** @param {Listing[]} listings */
 function saveListings(listings) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(listings));
+  try {
+    const serialized = JSON.stringify(listings);
+    localStorage.setItem(STORAGE_KEY, serialized);
+    return true;
+  } catch (err) {
+    console.error("Nie udało się zapisać ogłoszeń w localStorage", err);
+    return false;
+  }
 }
 
 function toCurrency(v, currency = "PLN") {
@@ -2763,8 +2770,18 @@ export default function App() {
   }, [purgeExpiredListings]);
 
   useEffect(() => {
-    saveListings(listings);
-  }, [listings]);
+    const errorMessage = "Nie udało się zapisać ogłoszeń w pamięci przeglądarki.";
+    try {
+      const success = saveListings(listings);
+      if (!success) {
+        console.error(errorMessage);
+        showToast(errorMessage);
+      }
+    } catch (err) {
+      console.error(errorMessage, err);
+      showToast(errorMessage);
+    }
+  }, [listings, showToast]);
 
   useEffect(() => {
     const interval = setInterval(() => {
