@@ -22,6 +22,7 @@ Stack: Vite + React + TailwindCSS. Dane są w localStorage przeglądarki.
    `alerts_match` oraz kolumnę `email_notifications` w tabeli `profiles`.
 3. Uruchom skrypt `supabase/messages.sql`, który dodaje tabelę profili (jeśli nie istnieje), tabelę `messages` oraz polityki RLS
    wymagane do obsługi prywatnych wiadomości i aktualizacji pola `display_name`.
+4. Po wdrożeniu upewnij się, że w Supabase jest włączony Realtime dla tabeli `public.messages` (Database → Replication).
 
 Wymagane zmienne środowiskowe (Vercel):
 

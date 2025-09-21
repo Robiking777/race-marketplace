@@ -62,6 +62,8 @@ const DISTANCE_SUGGESTIONS = /** @type {const} */ ([
  * @property {string} body
  * @property {string} created_at
  * @property {string | null} [read_at]
+ * @property {string | null} [from_display_name]
+ * @property {string | null} [to_display_name]
  */
 
 /**
@@ -2498,6 +2500,7 @@ export default function App() {
   const [messageSending, setMessageSending] = useState(false);
   const [messageError, setMessageError] = useState("");
   const [directMessages, setDirectMessages] = useState(/** @type {DirectMessage[]} */([]));
+  const [threadMessages, setThreadMessages] = useState(/** @type {DirectMessage[]} */([]));
   const [inboxLoading, setInboxLoading] = useState(false);
   const [inboxError, setInboxError] = useState("");
   const [selectedConversationUserId, setSelectedConversationUserId] = useState/** @type {(string|null)} */(null);
@@ -2910,6 +2913,7 @@ export default function App() {
       setNotificationsOpen(false);
       setSessionProfile(null);
       setDirectMessages([]);
+      setThreadMessages([]);
       setSelectedConversationUserId(null);
       setInboxError("");
       setConversationError("");
@@ -3059,29 +3063,52 @@ export default function App() {
         throw new Error("Brak danych do wysłania wiadomości.");
       }
       const ownerId = getListingOwnerId(messageListing);
-      if (!ownerId || ownerId === currentUserId) {
+      if (!ownerId) {
+        throw new Error("Nie można wysłać wiadomości.");
+      }
+      const targetId = String(ownerId);
+      if (targetId === currentUserId) {
         throw new Error("Nie można wysłać wiadomości.");
       }
       setMessageSending(true);
       setMessageError("");
       try {
+        const me = session.user;
+        const myName =
+          sessionProfile?.display_name ||
+          me.email?.split("@")[0] ||
+          `Użytkownik ${me.id.slice(0, 6)}`;
+        const otherName =
+          messageListing.author_display_name ||
+          messageListing.owner_display_name ||
+          `Użytkownik ${targetId.slice(0, 6)}`;
         const { data, error } = await supabase
           .from("messages")
           .insert({
             from_user: currentUserId,
-            to_user: ownerId,
+            to_user: targetId,
             listing_id: messageListing.id,
             body,
+            from_display_name: myName,
+            to_display_name: otherName,
           })
           .select()
           .single();
         if (error) throw error;
         if (data) {
+          const typed = /** @type {DirectMessage} */ (data);
           setDirectMessages((prev) => {
-            if (prev.some((msg) => msg.id === data.id)) return prev;
-            const next = [/** @type {DirectMessage} */ (data), ...prev];
+            if (prev.some((msg) => msg.id === typed.id)) return prev;
+            const next = [typed, ...prev];
             return next.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
           });
+          if (selectedConversationUserId === targetId) {
+            setThreadMessages((prev) => {
+              if (prev.some((msg) => msg.id === typed.id)) return prev;
+              const next = [...prev, typed];
+              return next.sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+            });
+          }
         }
         showToast("Wysłano");
         refreshUnread();
@@ -3094,7 +3121,16 @@ export default function App() {
         setMessageSending(false);
       }
     },
-    [session, currentUserId, messageListing, closeMessageModal, refreshUnread, showToast]
+    [
+      session,
+      sessionProfile,
+      currentUserId,
+      messageListing,
+      selectedConversationUserId,
+      closeMessageModal,
+      refreshUnread,
+      showToast,
+    ]
   );
 
   const fetchDirectMessages = useCallback(async () => {
@@ -3104,7 +3140,7 @@ export default function App() {
     try {
       const { data, error } = await supabase
         .from("messages")
-        .select("id,from_user,to_user,listing_id,body,created_at,read_at")
+        .select("id,from_user,to_user,listing_id,body,created_at,read_at,from_display_name,to_display_name")
         .or(`from_user.eq.${currentUserId},to_user.eq.${currentUserId}`)
         .order("created_at", { ascending: false })
         .limit(200);
@@ -3133,16 +3169,25 @@ export default function App() {
 
   const threads = useMemo(() => {
     if (!currentUserId) return [];
-    /** @type {{ otherUserId: string, lastMessage: DirectMessage, unreadCount: number }[]} */
+    /** @type {{ otherUserId: string, lastMessage: DirectMessage, unreadCount: number, counterpartName: string }[]} */
     const entries = [];
     const map = new Map();
+    const fallbackName = (id) => (id ? `Użytkownik ${String(id).slice(0, 6)}` : "Użytkownik");
     for (const msg of directMessages) {
       const otherUser = msg.from_user === currentUserId ? msg.to_user : msg.from_user;
       if (!otherUser) continue;
+      const nameCandidate =
+        msg.from_user === currentUserId ? msg.to_display_name : msg.from_display_name;
+      const displayName = (nameCandidate && String(nameCandidate).trim()) || fallbackName(otherUser);
       const existing = map.get(otherUser);
       const unreadIncrement = msg.to_user === currentUserId && !msg.read_at ? 1 : 0;
       if (!existing) {
-        const record = { otherUserId: otherUser, lastMessage: msg, unreadCount: unreadIncrement };
+        const record = {
+          otherUserId: otherUser,
+          lastMessage: msg,
+          unreadCount: unreadIncrement,
+          counterpartName: displayName,
+        };
         map.set(otherUser, record);
         entries.push(record);
       } else {
@@ -3150,6 +3195,10 @@ export default function App() {
           existing.lastMessage = msg;
         }
         existing.unreadCount += unreadIncrement;
+        const trimmed = nameCandidate && String(nameCandidate).trim();
+        if (trimmed && (!existing.counterpartName || existing.counterpartName.startsWith("Użytkownik "))) {
+          existing.counterpartName = trimmed;
+        }
       }
     }
     return entries.sort((a, b) => new Date(b.lastMessage.created_at) - new Date(a.lastMessage.created_at));
@@ -3172,28 +3221,76 @@ export default function App() {
     setConversationError("");
   }, [selectedConversationUserId]);
 
-  const conversationMessages = useMemo(() => {
-    if (!selectedConversationUserId || !currentUserId) return [];
-    return directMessages
-      .filter(
-        (msg) =>
-          (msg.from_user === currentUserId && msg.to_user === selectedConversationUserId) ||
-          (msg.to_user === currentUserId && msg.from_user === selectedConversationUserId)
-      )
-      .slice()
-      .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
-  }, [directMessages, selectedConversationUserId, currentUserId]);
+  useEffect(() => {
+    if (!selectedConversationUserId || !currentUserId) {
+      setThreadMessages([]);
+      return;
+    }
+    let cancelled = false;
+    async function loadThread() {
+      try {
+        const { data, error } = await supabase
+          .from("messages")
+          .select(
+            "id,from_user,to_user,listing_id,body,created_at,read_at,from_display_name,to_display_name"
+          )
+          .or(
+            `and(from_user.eq.${currentUserId},to_user.eq.${selectedConversationUserId}),and(from_user.eq.${selectedConversationUserId},to_user.eq.${currentUserId})`
+          )
+          .order("created_at", { ascending: true });
+        if (error) throw error;
+        if (!cancelled) {
+          setThreadMessages((data || []).map((item) => /** @type {DirectMessage} */ (item)));
+        }
+      } catch (err) {
+        if (!cancelled) {
+          console.error(err);
+          setThreadMessages([]);
+        }
+      }
+    }
+    loadThread();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedConversationUserId, currentUserId]);
 
   const activeConversationListing = useMemo(() => {
-    if (!conversationMessages.length) return null;
-    for (let i = conversationMessages.length - 1; i >= 0; i -= 1) {
-      const id = conversationMessages[i]?.listing_id;
+    if (!threadMessages.length) return null;
+    for (let i = threadMessages.length - 1; i >= 0; i -= 1) {
+      const id = threadMessages[i]?.listing_id;
       if (!id) continue;
       const match = listings.find((listing) => listing.id === id);
       if (match) return match;
     }
     return null;
-  }, [conversationMessages, listings]);
+  }, [threadMessages, listings]);
+
+  const getCounterpartNameForUser = useCallback(
+    (otherUserId) => {
+      if (!otherUserId) return "";
+      const thread = threads.find((item) => item.otherUserId === otherUserId);
+      if (thread?.counterpartName) {
+        return thread.counterpartName;
+      }
+      for (let i = threadMessages.length - 1; i >= 0; i -= 1) {
+        const msg = threadMessages[i];
+        if (msg.from_user === otherUserId && msg.from_display_name) {
+          return msg.from_display_name;
+        }
+        if (msg.to_user === otherUserId && msg.to_display_name) {
+          return msg.to_display_name;
+        }
+      }
+      return `Użytkownik ${otherUserId.slice(0, 6)}`;
+    },
+    [threads, threadMessages]
+  );
+
+  const activeCounterpartName = useMemo(() => {
+    if (!selectedConversationUserId) return "";
+    return getCounterpartNameForUser(selectedConversationUserId);
+  }, [selectedConversationUserId, getCounterpartNameForUser]);
 
   const markConversationRead = useCallback(
     async (otherUserId) => {
@@ -3214,6 +3311,13 @@ export default function App() {
           msg.to_user === currentUserId && msg.from_user === otherUserId && !msg.read_at ? { ...msg, read_at: now } : msg
         )
       );
+      setThreadMessages((prev) =>
+        prev.map((msg) =>
+          msg.to_user === currentUserId && msg.from_user === otherUserId && !msg.read_at
+            ? { ...msg, read_at: now }
+            : msg
+        )
+      );
       refreshUnread();
     },
     [currentUserId, refreshUnread]
@@ -3221,21 +3325,29 @@ export default function App() {
 
   useEffect(() => {
     if (!selectedConversationUserId || !currentUserId) return;
-    const hasUnread = conversationMessages.some((msg) => msg.to_user === currentUserId && !msg.read_at);
+    const hasUnread = threadMessages.some((msg) => msg.to_user === currentUserId && !msg.read_at);
     if (hasUnread) {
       markConversationRead(selectedConversationUserId);
     }
-  }, [selectedConversationUserId, conversationMessages, currentUserId, markConversationRead]);
+  }, [selectedConversationUserId, threadMessages, currentUserId, markConversationRead]);
 
   const sendConversationMessage = useCallback(
     async (body) => {
-      if (!currentUserId || !selectedConversationUserId) {
+      if (!currentUserId || !selectedConversationUserId || !session?.user) {
         throw new Error("Brak odbiorcy rozmowy.");
       }
       setConversationSending(true);
       setConversationError("");
       try {
-        const lastListingId = conversationMessages[conversationMessages.length - 1]?.listing_id || null;
+        const lastListingId = threadMessages[threadMessages.length - 1]?.listing_id || null;
+        const me = session.user;
+        const myName =
+          sessionProfile?.display_name ||
+          me.email?.split("@")[0] ||
+          `Użytkownik ${me.id.slice(0, 6)}`;
+        const otherName =
+          getCounterpartNameForUser(selectedConversationUserId) ||
+          `Użytkownik ${selectedConversationUserId.slice(0, 6)}`;
         const { data, error } = await supabase
           .from("messages")
           .insert({
@@ -3243,15 +3355,23 @@ export default function App() {
             to_user: selectedConversationUserId,
             listing_id: lastListingId,
             body,
+            from_display_name: myName,
+            to_display_name: otherName,
           })
           .select()
           .single();
         if (error) throw error;
         if (data) {
+          const typed = /** @type {DirectMessage} */ (data);
           setDirectMessages((prev) => {
-            if (prev.some((msg) => msg.id === data.id)) return prev;
-            const next = [/** @type {DirectMessage} */ (data), ...prev];
+            if (prev.some((msg) => msg.id === typed.id)) return prev;
+            const next = [typed, ...prev];
             return next.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+          });
+          setThreadMessages((prev) => {
+            if (prev.some((msg) => msg.id === typed.id)) return prev;
+            const next = [...prev, typed];
+            return next.sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
           });
         }
         showToast("Wysłano");
@@ -3265,7 +3385,16 @@ export default function App() {
         setConversationSending(false);
       }
     },
-    [currentUserId, selectedConversationUserId, conversationMessages, refreshUnread, showToast]
+    [
+      session,
+      sessionProfile,
+      currentUserId,
+      selectedConversationUserId,
+      threadMessages,
+      getCounterpartNameForUser,
+      refreshUnread,
+      showToast,
+    ]
   );
 
   const handleConversationSubmit = useCallback(
@@ -3289,25 +3418,76 @@ export default function App() {
   useEffect(() => {
     if (!currentUserId) return;
     const channel = supabase
-      .channel(`messages-to-${currentUserId}`)
+      .channel("messages-realtime")
       .on(
         "postgres_changes",
         { event: "INSERT", schema: "public", table: "messages", filter: `to_user=eq.${currentUserId}` },
         (payload) => {
           const newMessage = /** @type {DirectMessage} */ (payload.new);
+          setUnreadMessages((prev) => prev + 1);
           setDirectMessages((prev) => {
             if (prev.some((msg) => msg.id === newMessage.id)) return prev;
             const next = [newMessage, ...prev];
             return next.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
           });
-          refreshUnread();
+          if (selectedConversationUserId && newMessage.from_user === selectedConversationUserId) {
+            setThreadMessages((prev) => {
+              if (prev.some((msg) => msg.id === newMessage.id)) return prev;
+              const next = [...prev, newMessage];
+              return next.sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+            });
+          }
+        }
+      )
+      .on(
+        "postgres_changes",
+        { event: "UPDATE", schema: "public", table: "messages", filter: `to_user=eq.${currentUserId}` },
+        (payload) => {
+          const updated = /** @type {DirectMessage} */ (payload.new);
+          setDirectMessages((prev) => prev.map((msg) => (msg.id === updated.id ? { ...msg, ...updated } : msg)));
+          setThreadMessages((prev) => prev.map((msg) => (msg.id === updated.id ? { ...msg, ...updated } : msg)));
+          if (payload.old?.read_at === null && updated.read_at) {
+            setUnreadMessages((prev) => (prev > 0 ? prev - 1 : 0));
+          }
         }
       )
       .subscribe();
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [currentUserId, refreshUnread]);
+  }, [currentUserId, selectedConversationUserId]);
+
+  useEffect(() => {
+    if (!currentUserId || !selectedConversationUserId) return;
+    const otherId = selectedConversationUserId;
+    const channel = supabase
+      .channel(`thread-${otherId}`)
+      .on(
+        "postgres_changes",
+        { event: "INSERT", schema: "public", table: "messages" },
+        (payload) => {
+          const message = /** @type {DirectMessage} */ (payload.new);
+          const belongsToThread =
+            (message.from_user === currentUserId && message.to_user === otherId) ||
+            (message.from_user === otherId && message.to_user === currentUserId);
+          if (!belongsToThread) return;
+          setThreadMessages((prev) => {
+            if (prev.some((msg) => msg.id === message.id)) return prev;
+            const next = [...prev, message];
+            return next.sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+          });
+          setDirectMessages((prev) => {
+            if (prev.some((msg) => msg.id === message.id)) return prev;
+            const next = [message, ...prev];
+            return next.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+          });
+        }
+      )
+      .subscribe();
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [currentUserId, selectedConversationUserId]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -3828,7 +4008,7 @@ export default function App() {
                         const previewText = thread.lastMessage.body.trim();
                         const preview =
                           previewText.length > 120 ? `${previewText.slice(0, 120)}…` : previewText || "—";
-                        const label = `Użytkownik ${thread.otherUserId.slice(0, 8)}…`;
+                        const label = thread.counterpartName || `Użytkownik ${thread.otherUserId.slice(0, 6)}`;
                         const time = formatRelativeTime(thread.lastMessage.created_at);
                         return (
                           <button
@@ -3864,10 +4044,10 @@ export default function App() {
                           <div className="flex items-center justify-between gap-3">
                             <div>
                               <div className="text-sm font-semibold text-gray-900">
-                                Rozmowa z użytkownikiem {selectedConversationUserId.slice(0, 8)}…
+                                {activeCounterpartName || `Użytkownik ${selectedConversationUserId.slice(0, 6)}`}
                               </div>
                               <div className="text-xs text-gray-500">
-                                {conversationMessages.length} wiadomości
+                                {threadMessages.length} wiadomości
                               </div>
                             </div>
                             {activeConversationListing && (
@@ -3894,7 +4074,7 @@ export default function App() {
                             </div>
                           )}
                           <div className="space-y-3 max-h-[420px] overflow-y-auto pr-1">
-                            {conversationMessages.map((msg) => {
+                            {threadMessages.map((msg) => {
                               const isMine = msg.from_user === currentUserId;
                               const time = new Date(msg.created_at).toLocaleString("pl-PL", {
                                 hour: "2-digit",
